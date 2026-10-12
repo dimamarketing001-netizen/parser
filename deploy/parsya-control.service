@@ -1,0 +1,22 @@
+[Unit]
+Description=ParsYa Control Plane Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=parsya-control
+Group=parsya-control
+WorkingDirectory=/opt/parsya-control
+EnvironmentFile=/etc/parsya-control.env
+ExecStart=/opt/parsya-control/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8091 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/parsya-control
+
+[Install]
+WantedBy=multi-user.target
