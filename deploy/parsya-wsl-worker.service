@@ -11,7 +11,7 @@ EnvironmentFile=/home/dima/ParsYa/.env
 Environment=PARSYA_ENV_FILE=/home/dima/ParsYa/.env
 Environment=PARSYA_HOME=/home/dima/ParsYa
 Environment=PARSYA_MAIN_SCRIPT=/home/dima/ParsYa/ParsYa_main_with_tracking.py
-ExecStart=/home/dima/ParsYa/.venv/bin/python /home/dima/ParsYa/parser-worker/agent.py
+ExecStart=/home/dima/ParsYa/.venv/bin/python /home/dima/ParsYa/parsya-control/worker/agent.py
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
