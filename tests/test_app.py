@@ -11,6 +11,9 @@ os.environ["PARSYA_WORKER_TOKEN"] = "test-worker-token-that-is-long-enough-00000
 os.environ["PARSYA_COOKIE_SECURE"] = "0"
 os.environ["PARSYA_SQLITE_PATH"] = str(Path(tempfile.gettempdir()) / f"parsya-test-{os.getpid()}.sqlite3")
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from fastapi.testclient import TestClient
 from app.main import app
 
