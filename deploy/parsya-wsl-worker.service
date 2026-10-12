@@ -1,0 +1,21 @@
+[Unit]
+Description=ParsYa outbound worker agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dima
+WorkingDirectory=/home/dima/ParsYa
+EnvironmentFile=/home/dima/ParsYa/.env
+Environment=PARSYA_ENV_FILE=/home/dima/ParsYa/.env
+Environment=PARSYA_HOME=/home/dima/ParsYa
+Environment=PARSYA_MAIN_SCRIPT=/home/dima/ParsYa/ParsYa_main_with_tracking.py
+ExecStart=/home/dima/ParsYa/.venv/bin/python /home/dima/ParsYa/parser-worker/agent.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
