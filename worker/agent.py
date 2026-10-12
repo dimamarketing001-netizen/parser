@@ -67,20 +67,20 @@ class Worker:
         except Exception as exc:
             print(f"[worker] Не удалось передать лог: {exc}", flush=True)
 
-    def sync_latest_mysql_run(self, job_id: int, city: str, key_text: str) -> int:
-        """Copies this job's tracked creatives and original HTML from the WSL MySQL to the panel."""
+    def sync_latest_mysql_run(self, job_id: int, city: str, key_text: str) -> dict[str, Any]:
+        """Copies tracked site summaries, creative metadata and original HTML from WSL MySQL."""
         if os.getenv("PARSYA_SYNC_MYSQL", "1").strip().lower() not in {"1", "true", "yes"}:
-            return 0
+            return {}
         try:
             import mysql.connector
         except ImportError:
-            self.post_log(job_id, "\n[worker] mysql-connector-python не установлен: синхронизация креативов пропущена.\n")
-            return 0
+            self.post_log(job_id, "\n[worker] mysql-connector-python не установлен: синхронизация пропущена.\n")
+            return {}
 
         password = os.getenv("PARSYA_DB_PASSWORD", "")
         if not password:
-            self.post_log(job_id, "\n[worker] PARSYA_DB_PASSWORD не задан; синхронизация креативов пропущена.\n")
-            return 0
+            self.post_log(job_id, "\n[worker] PARSYA_DB_PASSWORD не задан; синхронизация пропущена.\n")
+            return {}
         cfg = {
             "host": os.getenv("PARSYA_DB_HOST", "localhost"),
             "port": int(os.getenv("PARSYA_DB_PORT", "3306")),
@@ -91,19 +91,73 @@ class Worker:
             "connection_timeout": 10,
         }
         connection = None
-        sent = 0
+        sent_creatives = 0
+        sent_sites = 0
+        summary: dict[str, Any] = {}
         try:
             connection = mysql.connector.connect(**cfg)
             cursor = connection.cursor(dictionary=True)
             cursor.execute(
-                "SELECT id FROM parser_runs WHERE city=%s AND key_text=%s ORDER BY id DESC LIMIT 1",
+                "SELECT id,status,platforms_total,platforms_finished,creative_occurrences,unique_creatives,error_summary,started_at,finished_at "
+                "FROM parser_runs WHERE city=%s AND key_text=%s ORDER BY id DESC LIMIT 1",
                 (city, key_text),
             )
             run = cursor.fetchone()
             if not run:
                 self.post_log(job_id, "\n[worker] В MySQL не найден tracked-запуск для этих параметров; синхронизация пропущена.\n")
-                return 0
+                return {}
             run_id = int(run["id"])
+            summary = {
+                "local_run_id": run_id,
+                "parser_status": str(run.get("status") or ""),
+                "platforms_total": int(run.get("platforms_total") or 0),
+                "platforms_finished": int(run.get("platforms_finished") or 0),
+                "creative_occurrences": int(run.get("creative_occurrences") or 0),
+                "unique_creatives": int(run.get("unique_creatives") or 0),
+                "parser_error_summary": str(run.get("error_summary") or "")[:5000],
+                "local_run_started_at": str(run.get("started_at") or ""),
+                "local_run_finished_at": str(run.get("finished_at") or ""),
+            }
+
+            # Copy per-site statuses so the remote run page can show timeouts and parser errors.
+            cursor.execute(
+                "SELECT platform,url,status,duration_seconds,scrolls_done,ad_signal_detected,unique_creatives,"
+                "partial_creatives,detection_methods,dom_snapshot_path,error_text "
+                "FROM parser_site_results WHERE run_id=%s ORDER BY id",
+                (run_id,),
+            )
+            site_batch: list[dict[str, Any]] = []
+
+            def send_site_batch(items: list[dict[str, Any]]) -> int:
+                if not items:
+                    return 0
+                result = self.request("POST", f"/api/worker/jobs/{job_id}/sites", json={"sites": items}).json()
+                return int(result.get("sites_received", 0))
+
+            for row in cursor:
+                duration = row.get("duration_seconds")
+                site_batch.append({
+                    "platform": str(row.get("platform") or "unknown"),
+                    "url": str(row.get("url") or ""),
+                    "status": str(row.get("status") or "unknown"),
+                    "duration_seconds": float(duration) if duration is not None else None,
+                    "scrolls_done": int(row.get("scrolls_done") or 0),
+                    "ad_signal_detected": bool(row.get("ad_signal_detected")),
+                    "unique_creatives": int(row.get("unique_creatives") or 0),
+                    "partial_creatives": int(row.get("partial_creatives") or 0),
+                    "detection_methods": str(row.get("detection_methods") or "")[:12000],
+                    "dom_snapshot_path": str(row.get("dom_snapshot_path") or "")[:8000],
+                    "error_text": str(row.get("error_text") or "")[:30000],
+                })
+                if len(site_batch) >= 100:
+                    sent_sites += send_site_batch(site_batch)
+                    site_batch.clear()
+            if site_batch:
+                sent_sites += send_site_batch(site_batch)
+            cursor.close()
+
+            # Now export all detected ad occurrences and the compressed source HTML.
+            cursor = connection.cursor(dictionary=True)
             cursor.execute(
                 "SELECT o.platform,o.source_page_url,o.detection_method,o.recognition_status,o.observed_at,"
                 "c.creative_hash,c.domain,c.title,c.description,c.image_url,c.destination_url,"
@@ -116,7 +170,7 @@ class Worker:
             )
             batch: list[dict[str, Any]] = []
 
-            def send_batch(items: list[dict[str, Any]]) -> int:
+            def send_creative_batch(items: list[dict[str, Any]]) -> int:
                 if not items:
                     return 0
                 result = self.request("POST", f"/api/worker/jobs/{job_id}/creatives", json={"creatives": items}).json()
@@ -130,9 +184,10 @@ class Worker:
                         html_text = gzip.decompress(bytes(compressed)).decode("utf-8", errors="replace")
                     except Exception:
                         html_text = ""
-                # API limits are deliberate. Metadata is still sent if one HTML payload is oversized.
+                # Metadata remains useful even when a single source fragment is too large for the API.
                 if len(html_text) > MAX_HTML_CHARS:
                     html_text = ""
+                captured = row.get("observed_at")
                 batch.append({
                     "creative_hash": row.get("creative_hash") or "",
                     "platform": row.get("platform") or "unknown",
@@ -144,16 +199,22 @@ class Worker:
                     "source_page_url": row.get("source_page_url") or "",
                     "detection_method": row.get("detection_method") or "unknown",
                     "recognition_status": row.get("recognition_status") or "recognized",
-                    "captured_at": row.get("observed_at").isoformat() if hasattr(row.get("observed_at"), "isoformat") else str(row.get("observed_at") or ""),
+                    "captured_at": captured.isoformat() if hasattr(captured, "isoformat") else str(captured or ""),
                     "html": html_text,
                 })
                 if len(batch) >= 5:
-                    sent += send_batch(batch)
+                    sent_creatives += send_creative_batch(batch)
                     batch.clear()
             if batch:
-                sent += send_batch(batch)
+                sent_creatives += send_creative_batch(batch)
             cursor.close()
-            self.post_log(job_id, f"\n[worker] Синхронизация из MySQL завершена: run_id={run_id}, отправлено обнаружений={sent}.\n")
+
+            summary["site_results_synced"] = sent_sites
+            summary["creative_occurrences_synced"] = sent_creatives
+            self.post_log(
+                job_id,
+                f"\n[worker] MySQL run_id={run_id}: площадок отправлено={sent_sites}, обнаружений отправлено={sent_creatives}.\n",
+            )
         except Exception as exc:
             self.post_log(job_id, f"\n[worker] Ошибка синхронизации MySQL: {type(exc).__name__}: {exc}\n")
         finally:
@@ -162,7 +223,7 @@ class Worker:
                     connection.close()
                 except Exception:
                     pass
-        return sent
+        return summary
 
     def execute_job(self, job: dict[str, Any]) -> None:
         job_id = int(job["id"])
@@ -209,8 +270,8 @@ class Worker:
             exit_code = proc.wait()
             if log_buffer:
                 self.post_log(job_id, log_buffer)
-            synced = self.sync_latest_mysql_run(job_id, city, key_text) if exit_code == 0 else 0
-            result = {"duration_seconds": round(time.time() - started_at, 2), "sync_records_accepted": synced}
+            sync_summary = self.sync_latest_mysql_run(job_id, city, key_text) if exit_code == 0 else {}
+            result = {"duration_seconds": round(time.time() - started_at, 2), **sync_summary}
             error = "" if exit_code == 0 else f"Parser exited with code {exit_code}"
             self.request("POST", f"/api/worker/jobs/{job_id}/finish", json={
                 "status": "succeeded" if exit_code == 0 else "failed",
