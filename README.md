@@ -22,7 +22,7 @@ sudo apt install -y git python3 python3-venv python3-pip nginx certbot python3-c
 sudo useradd --system --home-dir /var/lib/parsya-control --shell /usr/sbin/nologin parsya-control 2>/dev/null || true
 sudo install -d -o parsya-control -g parsya-control /var/lib/parsya-control
 
-sudo git clone --branch feature/remote-lk-worker https://github.com/dimamarketing001-netizen/parser.git /opt/parsya-control
+sudo git clone --branch main https://github.com/dimamarketing001-netizen/parser.git /opt/parsya-control
 sudo python3 -m venv /opt/parsya-control/.venv
 sudo /opt/parsya-control/.venv/bin/pip install --upgrade pip
 sudo /opt/parsya-control/.venv/bin/pip install -r /opt/parsya-control/requirements.txt
@@ -94,7 +94,7 @@ sudo systemctl restart parsya-control
 
 ```bash
 cd /home/dima/ParsYa
-git clone --branch feature/remote-lk-worker https://github.com/dimamarketing001-netizen/parser.git parsya-control
+git clone --branch main https://github.com/dimamarketing001-netizen/parser.git parsya-control
 source .venv/bin/activate
 pip install -r /home/dima/ParsYa/parsya-control/worker/requirements.txt
 ```
