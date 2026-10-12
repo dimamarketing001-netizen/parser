@@ -196,12 +196,16 @@ class Worker:
                 bufsize=1,
             )
             assert proc.stdout is not None
+            buffered_lines = 0
             for line in proc.stdout:
                 print(line, end="", flush=True)
                 log_buffer += line
-                if len(log_buffer) >= 4000 or "\n" in line:
+                buffered_lines += 1
+                # Batch stdout to avoid one network request per line slowing down Selenium.
+                if len(log_buffer) >= 8000 or buffered_lines >= 25:
                     self.post_log(job_id, log_buffer)
                     log_buffer = ""
+                    buffered_lines = 0
             exit_code = proc.wait()
             if log_buffer:
                 self.post_log(job_id, log_buffer)
