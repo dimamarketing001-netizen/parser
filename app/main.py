@@ -127,6 +127,25 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_occurrences_job ON occurrences(job_id);
         CREATE INDEX IF NOT EXISTS ix_occurrences_platform ON occurrences(platform);
+        CREATE TABLE IF NOT EXISTS site_results (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_id INTEGER NOT NULL,
+          platform TEXT NOT NULL,
+          url TEXT,
+          status TEXT NOT NULL DEFAULT 'unknown',
+          duration_seconds REAL,
+          scrolls_done INTEGER NOT NULL DEFAULT 0,
+          ad_signal_detected INTEGER NOT NULL DEFAULT 0,
+          unique_creatives INTEGER NOT NULL DEFAULT 0,
+          partial_creatives INTEGER NOT NULL DEFAULT 0,
+          detection_methods TEXT,
+          dom_snapshot_path TEXT,
+          error_text TEXT,
+          UNIQUE(job_id, platform),
+          FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_site_results_job ON site_results(job_id);
+        CREATE INDEX IF NOT EXISTS ix_site_results_status ON site_results(status);
         """)
         db.commit()
 
@@ -237,6 +256,24 @@ class CreativeIn(BaseModel):
 
 class CreativesBatch(BaseModel):
     creatives: list[CreativeIn] = Field(max_length=20)
+
+
+class SiteResultIn(BaseModel):
+    platform: str = Field(min_length=1, max_length=255)
+    url: str = Field(default="", max_length=8000)
+    status: str = Field(default="unknown", max_length=64)
+    duration_seconds: float | None = None
+    scrolls_done: int = 0
+    ad_signal_detected: bool = False
+    unique_creatives: int = 0
+    partial_creatives: int = 0
+    detection_methods: str = Field(default="", max_length=12000)
+    dom_snapshot_path: str = Field(default="", max_length=8000)
+    error_text: str = Field(default="", max_length=30000)
+
+
+class SiteResultsBatch(BaseModel):
+    sites: list[SiteResultIn] = Field(max_length=100)
 
 
 @app.get("/health")
@@ -360,12 +397,19 @@ def run_detail(request: Request, job_id: int):
     with closing(connect()) as db:
         job = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         occurrences = db.execute("SELECT o.platform,COUNT(*) n FROM occurrences o WHERE o.job_id=? GROUP BY o.platform ORDER BY n DESC", (job_id,)).fetchall()
+        site_results = db.execute("SELECT * FROM site_results WHERE job_id=? ORDER BY platform", (job_id,)).fetchall()
     if not job:
         raise HTTPException(status_code=404, detail="Запуск не найден")
     sites = "".join(f'<tr><td>{esc(r["platform"])}</td><td>{r["n"]}</td></tr>' for r in occurrences) or '<tr><td colspan="2" class="empty">Воркер ещё не отправил креативы для этого запуска</td></tr>'
+    def site_badge(status: str) -> str:
+        return f'<span class="badge {esc(status)}">{esc(status)}</span>'
+    scan_rows = "".join(
+        f'<tr><td>{esc(s["platform"])}</td><td>{site_badge(s["status"])}</td><td>{s["unique_creatives"]}</td><td>{"да" if s["ad_signal_detected"] else "нет"}</td><td>{esc(s["duration_seconds"] or "—")}</td><td class="error-text">{esc(s["error_text"] or "—")}</td></tr>'
+        for s in site_results
+    ) or '<tr><td colspan="6" class="empty">Результаты по площадкам ещё не синхронизированы</td></tr>'
     result = esc(job["result_json"] or "{}")
     body = f"""<div class="grid"><div class="metric"><div class="label">Статус</div><div class="value" style="font-size:21px">{esc(job["status"])}</div><div class="hint">Код завершения: {esc(job["exit_code"])}</div></div><div class="metric"><div class="label">Город</div><div class="value" style="font-size:21px">{esc(job["city"])}</div></div><div class="metric"><div class="label">Креативы синхронизированы</div><div class="value">{job["total_creatives"]}</div></div><div class="metric"><div class="label">Воркер</div><div class="value" style="font-size:18px;overflow-wrap:anywhere">{esc(job["worker_id"] or "ожидание")}</div></div></div>
-<div class="detail-grid"><div class="panel"><h2>Детали задания</h2><table><tbody><tr><th>Ключевой запрос</th><td>{esc(job["key_text"])}</td></tr><tr><th>Создан</th><td>{esc(job["created_at"])}</td></tr><tr><th>Начат</th><td>{esc(job["started_at"] or "—")}</td></tr><tr><th>Завершён</th><td>{esc(job["finished_at"] or "—")}</td></tr><tr><th>Ошибка</th><td class="error-text">{esc(job["error_text"] or "—")}</td></tr></tbody></table><h2 style="margin-top:22px">Площадки с креативами</h2><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div><div class="panel"><div class="panel-head"><h2>Лог воркера</h2><button class="btn secondary" onclick="location.reload()">Обновить</button></div><div class="log mono">{esc(job["log_text"] or "Ожидание подключения воркера…")}</div></div></div><div class="panel"><h2>Результат</h2><pre class="log mono">{result}</pre></div>"""
+<div class="detail-grid"><div class="panel"><h2>Детали задания</h2><table><tbody><tr><th>Ключевой запрос</th><td>{esc(job["key_text"])}</td></tr><tr><th>Создан</th><td>{esc(job["created_at"])}</td></tr><tr><th>Начат</th><td>{esc(job["started_at"] or "—")}</td></tr><tr><th>Завершён</th><td>{esc(job["finished_at"] or "—")}</td></tr><tr><th>Ошибка</th><td class="error-text">{esc(job["error_text"] or "—")}</td></tr></tbody></table><h2 style="margin-top:22px">Результаты сканирования площадок</h2><div class="table-wrap"><table><thead><tr><th>Площадка</th><th>Статус</th><th>Креативы</th><th>Сигнал рекламы</th><th>Время, сек.</th><th>Ошибка</th></tr></thead><tbody>{scan_rows}</tbody></table></div><h2 style="margin-top:22px">Обнаружения по рекламным площадкам</h2><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div><div class="panel"><div class="panel-head"><h2>Лог воркера</h2><button class="btn secondary" onclick="location.reload()">Обновить</button></div><div class="log mono">{esc(job["log_text"] or "Ожидание подключения воркера…")}</div></div></div><div class="panel"><h2>Результат</h2><pre class="log mono">{result}</pre></div>"""
     return page(request, f"Запуск #{job_id}", body, "runs")
 
 
@@ -531,6 +575,28 @@ def worker_creatives(job_id: int, payload: CreativesBatch, authorization: str | 
         db.execute("UPDATE jobs SET total_creatives=(SELECT COUNT(DISTINCT creative_id) FROM occurrences WHERE job_id=?) WHERE id=?", (job_id, job_id))
         db.commit()
     return {"ok": True, "accepted": accepted, "new_creatives": new_count}
+
+
+@app.post("/api/worker/jobs/{job_id}/sites")
+def worker_site_results(job_id: int, payload: SiteResultsBatch, authorization: str | None = Header(default=None)):
+    worker_auth(authorization)
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for site in payload.sites:
+            db.execute(
+                "INSERT INTO site_results(job_id,platform,url,status,duration_seconds,scrolls_done,ad_signal_detected,unique_creatives,partial_creatives,detection_methods,dom_snapshot_path,error_text) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(job_id,platform) DO UPDATE SET "
+                "url=excluded.url,status=excluded.status,duration_seconds=excluded.duration_seconds,scrolls_done=excluded.scrolls_done,"
+                "ad_signal_detected=excluded.ad_signal_detected,unique_creatives=excluded.unique_creatives,partial_creatives=excluded.partial_creatives,"
+                "detection_methods=excluded.detection_methods,dom_snapshot_path=excluded.dom_snapshot_path,error_text=excluded.error_text",
+                (job_id, site.platform.strip(), site.url, site.status, site.duration_seconds, site.scrolls_done,
+                 1 if site.ad_signal_detected else 0, site.unique_creatives, site.partial_creatives,
+                 site.detection_methods, site.dom_snapshot_path, site.error_text),
+            )
+        db.commit()
+    return {"ok": True, "sites_received": len(payload.sites)}
 
 
 @app.post("/api/worker/jobs/{job_id}/finish")
