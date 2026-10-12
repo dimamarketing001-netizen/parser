@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -67,7 +68,7 @@ class Worker:
         except Exception as exc:
             print(f"[worker] Не удалось передать лог: {exc}", flush=True)
 
-    def sync_latest_mysql_run(self, job_id: int, city: str, key_text: str) -> dict[str, Any]:
+    def sync_latest_mysql_run(self, job_id: int, city: str, key_text: str, run_started_at: str) -> dict[str, Any]:
         """Copies tracked site summaries, creative metadata and original HTML from WSL MySQL."""
         if os.getenv("PARSYA_SYNC_MYSQL", "1").strip().lower() not in {"1", "true", "yes"}:
             return {}
@@ -99,8 +100,8 @@ class Worker:
             cursor = connection.cursor(dictionary=True)
             cursor.execute(
                 "SELECT id,status,platforms_total,platforms_finished,creative_occurrences,unique_creatives,error_summary,started_at,finished_at "
-                "FROM parser_runs WHERE city=%s AND key_text=%s ORDER BY id DESC LIMIT 1",
-                (city, key_text),
+                "FROM parser_runs WHERE city=%s AND key_text=%s AND started_at >= %s ORDER BY id DESC LIMIT 1",
+                (city, key_text, run_started_at),
             )
             run = cursor.fetchone()
             if not run:
@@ -242,6 +243,7 @@ class Worker:
         env["PYTHONUNBUFFERED"] = "1"
         command = [self.python, str(self.script)]
         started_at = time.time()
+        run_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         exit_code = 1
         log_buffer = ""
         try:
@@ -270,7 +272,8 @@ class Worker:
             exit_code = proc.wait()
             if log_buffer:
                 self.post_log(job_id, log_buffer)
-            sync_summary = self.sync_latest_mysql_run(job_id, city, key_text) if exit_code == 0 else {}
+            # Sync any partial results too, even if the parser exits with an error.
+            sync_summary = self.sync_latest_mysql_run(job_id, city, key_text, run_started_at)
             result = {"duration_seconds": round(time.time() - started_at, 2), **sync_summary}
             error = "" if exit_code == 0 else f"Parser exited with code {exit_code}"
             self.request("POST", f"/api/worker/jobs/{job_id}/finish", json={
