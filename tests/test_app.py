@@ -96,6 +96,25 @@ def test_login_job_queue_creative_sync_and_html_view():
     assert uploaded.status_code == 200
     assert uploaded.json()["accepted"] == 1
 
+    site_sync = client.post(
+        f"/api/worker/jobs/{job['id']}/sites",
+        headers=headers,
+        json={"sites": [{
+            "platform": "example.test",
+            "url": "https://example.test",
+            "status": "ok",
+            "duration_seconds": 3.2,
+            "scrolls_done": 2,
+            "ad_signal_detected": True,
+            "unique_creatives": 1,
+            "partial_creatives": 0,
+            "detection_methods": "test-adapter",
+            "error_text": "",
+        }]},
+    )
+    assert site_sync.status_code == 200
+    assert site_sync.json()["sites_received"] == 1
+
     finished = client.post(
         f"/api/worker/jobs/{job['id']}/finish",
         headers=headers,
@@ -111,3 +130,8 @@ def test_login_job_queue_creative_sync_and_html_view():
     assert detail.status_code == 200
     assert "Test debt ad" in detail.text
     assert "/api/creatives/1/html" in detail.text
+
+    run_detail = client.get(f"/runs/{job['id']}")
+    assert run_detail.status_code == 200
+    assert "example.test" in run_detail.text
+    assert "Результаты сканирования площадок" in run_detail.text
