@@ -9,11 +9,12 @@ import os
 import secrets
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -38,6 +39,8 @@ if len(SECRET_KEY) < 32:
 if len(WORKER_TOKEN) < 32:
     raise RuntimeError("PARSYA_WORKER_TOKEN must be a random value of at least 32 characters.")
 
+FRONTEND_ORIGINS = [o.strip() for o in os.getenv("PARSYA_FRONTEND_ORIGINS", "").split(",") if o.strip()]
+
 app = FastAPI(title="ParsYa Control Plane", docs_url=None, redoc_url=None)
 app.add_middleware(
     SessionMiddleware,
@@ -47,6 +50,16 @@ app.add_middleware(
     https_only=COOKIE_SECURE,
     max_age=60 * 60 * 12,
 )
+if FRONTEND_ORIGINS:
+    # The marketer-facing SaaS frontend is a separate static site/domain and authenticates
+    # with a per-user bearer token (not a cookie), so credentials are not needed here.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=FRONTEND_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+        allow_credentials=False,
+    )
 
 
 def now_iso() -> str:
@@ -190,6 +203,28 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_ci_creative ON creative_identifiers(creative_id);
         CREATE INDEX IF NOT EXISTS ix_ci_value ON creative_identifiers(identifier_type, identifier_value);
+
+        -- Marketer-facing SaaS accounts. Separate from the single env-configured
+        -- PARSYA_ADMIN_USER/PASSWORD above, which remains the ops console login and is
+        -- untouched by this table. An admin-role row here manages these accounts from
+        -- /admin/users; it does not grant access to the ops console itself.
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'marketer',
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          last_login_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS user_tokens (
+          token_hash TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_user_tokens_user ON user_tokens(user_id);
         """)
         # content_fingerprint groups creative rows that are the same image/text/title
         # creative re-detected under a different creative_hash (e.g. a different platform
@@ -243,6 +278,7 @@ def page(request: Request, title: str, body: str, active: str = "") -> HTMLRespo
             ("/runs", "Запуски", "runs"),
             ("/creatives", "Креативы", "creatives"),
             ("/new-run", "Новый запуск", "new-run"),
+            ("/admin/users", "Пользователи SaaS", "users"),
         ]
         nav = '<aside class="sidebar"><div class="brand"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><nav>'
         nav += "".join(
@@ -272,6 +308,72 @@ def worker_auth(authorization: str | None) -> None:
     provided = authorization[7:].strip()
     if not hmac.compare_digest(provided, WORKER_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid worker token")
+
+
+PBKDF2_ITERATIONS = 310_000
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"{salt.hex()}:{digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, digest_hex = stored.split(":", 1)
+        salt = bytes.fromhex(salt_hex)
+    except (ValueError, AttributeError):
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return hmac.compare_digest(candidate.hex(), digest_hex)
+
+
+def issue_user_token(db: sqlite3.Connection, user_id: int, days_valid: int = 30) -> str:
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    expires = now.replace(microsecond=0) + timedelta(days=days_valid)
+    db.execute(
+        "INSERT INTO user_tokens(token_hash,user_id,created_at,expires_at) VALUES(?,?,?,?)",
+        (token_hash, user_id, now.isoformat(), expires.isoformat()),
+    )
+    return token
+
+
+def resolve_user_token(token: str) -> sqlite3.Row | None:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with closing(connect()) as db:
+        row = db.execute(
+            "SELECT u.id,u.email,u.role,u.is_active,t.expires_at FROM user_tokens t "
+            "JOIN users u ON u.id=t.user_id WHERE t.token_hash=?",
+            (token_hash,),
+        ).fetchone()
+        if not row or not row["is_active"]:
+            return None
+        if row["expires_at"] < now_iso():
+            db.execute("DELETE FROM user_tokens WHERE token_hash=?", (token_hash,))
+            db.commit()
+            return None
+        return row
+
+
+def public_api_principal(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Accepts either the operator/server-to-server X-API-Key, or a per-user bearer
+    token issued by /api/v1/auth/login for the marketer-facing frontend."""
+    if authorization and authorization.startswith("Bearer "):
+        user = resolve_user_token(authorization[7:].strip())
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        return {"kind": "user", "user_id": user["id"], "email": user["email"], "role": user["role"]}
+    if PUBLIC_API_TOKEN and x_api_key and hmac.compare_digest(x_api_key, PUBLIC_API_TOKEN):
+        return {"kind": "api_key"}
+    if not PUBLIC_API_TOKEN and not x_api_key and not authorization:
+        raise HTTPException(status_code=503, detail="Public API is not configured")
+    raise HTTPException(status_code=401, detail="Invalid credentials: provide X-API-Key or Authorization: Bearer <token>")
 
 
 class PollIn(BaseModel):
@@ -329,6 +431,17 @@ class AdvertiserLinkIn(BaseModel):
 
 class AdvertiserLinksBatch(BaseModel):
     links: list[AdvertiserLinkIn] = Field(max_length=100)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class CreateUserIn(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=200)
+    role: str = Field(default="marketer", pattern="^(marketer|admin)$")
 
 
 class SiteResultIn(BaseModel):
@@ -554,6 +667,81 @@ def creative_html_download(request: Request, creative_id: int):
     return Response(raw, media_type="text/html; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="parsya-creative-{creative_id}.html"', "X-Content-Type-Options": "nosniff"})
 
 
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users_page(request: Request, created_email: str = "", created_password: str = "", error: str = ""):
+    redirect = admin_or_redirect(request)
+    if redirect:
+        return redirect
+    with closing(connect()) as db:
+        rows = db.execute("SELECT id,email,role,is_active,created_at,last_login_at FROM users ORDER BY created_at DESC").fetchall()
+    def role_badge(role: str) -> str:
+        return f'<span class="badge {"ok" if role == "admin" else ""}">{esc(role)}</span>'
+    def status_badge(active: int) -> str:
+        return '<span class="badge ok">активен</span>' if active else '<span class="badge failed">отключён</span>'
+    table_rows = "".join(
+        f'<tr><td>{esc(u["email"])}</td><td>{role_badge(u["role"])}</td><td>{status_badge(u["is_active"])}</td>'
+        f'<td>{esc(u["created_at"])}</td><td>{esc(u["last_login_at"] or "—")}</td>'
+        f'<td class="right">{"" if not u["is_active"] else "<form method=\"post\" action=\"/admin/users/" + str(u["id"]) + "/deactivate\" style=\"display:inline\"><input type=\"hidden\" name=\"csrf_token\" value=\"" + esc(csrf_token(request)) + "\"><button class=\"btn secondary\">Отключить</button></form>"}</td></tr>'
+        for u in rows
+    ) or '<tr><td colspan="6" class="empty">Пользователей SaaS пока нет</td></tr>'
+    notice = ""
+    if created_email:
+        notice = (f'<div class="notice">Аккаунт <b>{esc(created_email)}</b> создан. Временный пароль: '
+                  f'<span class="mono">{esc(created_password)}</span> — передайте его маркетологу и попросите сменить при первом входе.</div>')
+    if error:
+        notice = f'<div class="notice error-text">{esc(error)}</div>'
+    body = f"""{notice}
+<div class="panel"><div class="panel-head"><h2>Новый аккаунт маркетолога</h2></div>
+<form method="post" action="/admin/users" class="formgrid">
+<input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}">
+<div class="field"><label>Email</label><input type="email" name="email" required maxlength="255"></div>
+<div class="field"><label>Роль</label><select name="role"><option value="marketer">Маркетолог</option><option value="admin">Админ SaaS</option></select></div>
+<div class="field" style="grid-column:1/-1"><button class="btn">Создать и выдать пароль</button></div>
+</form>
+<div class="help">Пароль генерируется автоматически и показывается один раз. Эти аккаунты — для входа во фронтенд-сервис (не в эту панель воркера).</div>
+</div>
+<div class="panel"><div class="panel-head"><h2>Аккаунты SaaS-фронтенда</h2></div>
+<div class="table-wrap"><table><thead><tr><th>Email</th><th>Роль</th><th>Статус</th><th>Создан</th><th>Последний вход</th><th></th></tr></thead><tbody>{table_rows}</tbody></table></div></div>"""
+    return page(request, "Пользователи SaaS", body, "users")
+
+
+@app.post("/admin/users", response_class=HTMLResponse)
+def admin_users_create(
+    request: Request, email: str = Form(...), role: str = Form("marketer"),
+    csrf_token_value: str = Form(..., alias="csrf_token"),
+):
+    redirect = admin_or_redirect(request)
+    if redirect:
+        return redirect
+    check_csrf(request, csrf_token_value)
+    email = email.strip().casefold()[:255]
+    role = role if role in {"marketer", "admin"} else "marketer"
+    temp_password = secrets.token_urlsafe(9)
+    with closing(connect()) as db:
+        existing = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+        if existing:
+            return RedirectResponse(f"/admin/users?error=Email+{email}+уже+занят", status_code=303)
+        db.execute(
+            "INSERT INTO users(email,password_hash,role,is_active,created_at) VALUES(?,?,?,1,?)",
+            (email, hash_password(temp_password), role, now_iso()),
+        )
+        db.commit()
+    return RedirectResponse(f"/admin/users?created_email={email}&created_password={temp_password}", status_code=303)
+
+
+@app.post("/admin/users/{user_id}/deactivate")
+def admin_users_deactivate(request: Request, user_id: int, csrf_token_value: str = Form(..., alias="csrf_token")):
+    redirect = admin_or_redirect(request)
+    if redirect:
+        return redirect
+    check_csrf(request, csrf_token_value)
+    with closing(connect()) as db:
+        db.execute("UPDATE users SET is_active=0 WHERE id=?", (user_id,))
+        db.execute("DELETE FROM user_tokens WHERE user_id=?", (user_id,))
+        db.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+
 @app.post("/api/worker/poll")
 def worker_poll(payload: PollIn, authorization: str | None = Header(default=None)):
     worker_auth(authorization)
@@ -762,11 +950,29 @@ def worker_status(authorization: str | None = Header(default=None)):
     return {"workers": [dict(row) for row in rows]}
 
 
-def public_api_auth(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
-    if not PUBLIC_API_TOKEN:
-        raise HTTPException(status_code=503, detail="Public API is not configured (PARSYA_PUBLIC_API_TOKEN unset)")
-    if not x_api_key or not hmac.compare_digest(x_api_key, PUBLIC_API_TOKEN):
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+@app.post("/api/v1/auth/login")
+def api_login(payload: LoginIn):
+    email = payload.email.strip().casefold()
+    with closing(connect()) as db:
+        row = db.execute("SELECT id,password_hash,role,is_active FROM users WHERE email=?", (email,)).fetchone()
+        if not row or not row["is_active"] or not verify_password(payload.password, row["password_hash"]):
+            # Same error for "no such user" and "wrong password" so login cannot be used to
+            # enumerate registered marketer emails.
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        token = issue_user_token(db, int(row["id"]))
+        db.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), row["id"]))
+        db.commit()
+    return {"token": token, "role": row["role"], "email": email}
+
+
+@app.post("/api/v1/auth/logout")
+def api_logout(authorization: str | None = Header(default=None)):
+    if authorization and authorization.startswith("Bearer "):
+        token_hash = hashlib.sha256(authorization[7:].strip().encode("utf-8")).hexdigest()
+        with closing(connect()) as db:
+            db.execute("DELETE FROM user_tokens WHERE token_hash=?", (token_hash,))
+            db.commit()
+    return {"ok": True}
 
 
 def _paging(limit: int, offset: int) -> tuple[int, int]:
@@ -790,8 +996,8 @@ def _creative_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-@app.get("/api/v1/advertisers", dependencies=[Depends(public_api_auth)])
-def api_list_advertisers(q: str = "", limit: int = 25, offset: int = 0):
+@app.get("/api/v1/advertisers")
+def api_list_advertisers(q: str = "", limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
         where, params = "", []
@@ -813,8 +1019,8 @@ def api_list_advertisers(q: str = "", limit: int = 25, offset: int = 0):
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/api/v1/advertisers/{inn}/creatives", dependencies=[Depends(public_api_auth)])
-def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0):
+@app.get("/api/v1/advertisers/{inn}/creatives")
+def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0, principal: dict = Depends(public_api_principal)):
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
         advertiser = db.execute("SELECT id,inn,canonical_name FROM advertisers WHERE inn=?", (inn,)).fetchone()
@@ -878,8 +1084,8 @@ def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0):
     }
 
 
-@app.get("/api/v1/creatives", dependencies=[Depends(public_api_auth)])
-def api_list_creatives(inn: str = "", platform: str = "", q: str = "", limit: int = 50, offset: int = 0):
+@app.get("/api/v1/creatives")
+def api_list_creatives(inn: str = "", platform: str = "", q: str = "", limit: int = 50, offset: int = 0, principal: dict = Depends(public_api_principal)):
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
         joins = ""
@@ -905,8 +1111,8 @@ def api_list_creatives(inn: str = "", platform: str = "", q: str = "", limit: in
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/api/v1/creatives/{creative_id}", dependencies=[Depends(public_api_auth)])
-def api_creative_detail(creative_id: int):
+@app.get("/api/v1/creatives/{creative_id}")
+def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_principal)):
     with closing(connect()) as db:
         row = db.execute("SELECT * FROM creatives WHERE id=?", (creative_id,)).fetchone()
         if not row:
