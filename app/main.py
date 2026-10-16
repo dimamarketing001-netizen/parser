@@ -234,6 +234,13 @@ def init_db() -> None:
         if "content_fingerprint" not in existing_cols:
             db.execute("ALTER TABLE creatives ADD COLUMN content_fingerprint TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_fingerprint ON creatives(content_fingerprint)")
+        # owner_user_id lets a SaaS user (see `users`) self-serve: launch their own runs from
+        # the frontend and only ever see their own jobs. NULL means an ops-console run created
+        # from the admin HTML pages, not tied to any SaaS account.
+        job_cols = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "owner_user_id" not in job_cols:
+            db.execute("ALTER TABLE jobs ADD COLUMN owner_user_id INTEGER REFERENCES users(id)")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_jobs_owner ON jobs(owner_user_id)")
         db.commit()
 
 
@@ -442,6 +449,16 @@ class CreateUserIn(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=200)
     role: str = Field(default="marketer", pattern="^(marketer|admin)$")
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class RunCreateIn(BaseModel):
+    city: str = Field(min_length=1, max_length=100)
+    key_text: str = Field(min_length=1, max_length=300)
 
 
 class SiteResultIn(BaseModel):
@@ -1085,30 +1102,64 @@ def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0, princip
 
 
 @app.get("/api/v1/creatives")
-def api_list_creatives(inn: str = "", platform: str = "", q: str = "", limit: int = 50, offset: int = 0, principal: dict = Depends(public_api_principal)):
+def api_list_creatives(
+    inn: str = "", platform: str = "", q: str = "", status: str = "", job_id: int | None = None,
+    has_advertiser: bool | None = None, date_from: str = "", date_to: str = "",
+    sort: str = "recent", limit: int = 50, offset: int = 0,
+    principal: dict = Depends(public_api_principal),
+):
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
-        joins = ""
+        joins = []
         where_parts = []
         params: list[Any] = []
         if inn:
-            joins = "JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id"
+            joins.append("JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id")
             where_parts.append("a.inn=?")
             params.append(inn)
+        elif has_advertiser is not None:
+            exists_sql = "EXISTS (SELECT 1 FROM creative_advertiser_links cal WHERE cal.creative_id=c.id)"
+            where_parts.append(exists_sql if has_advertiser else f"NOT {exists_sql}")
+        if job_id is not None:
+            joins.append("JOIN occurrences jo ON jo.creative_id=c.id")
+            where_parts.append("jo.job_id=?")
+            params.append(job_id)
         if platform:
             where_parts.append("c.platform=?")
             params.append(platform)
+        if status:
+            where_parts.append("c.recognition_status=?")
+            params.append(status)
         if q:
             where_parts.append("(c.title LIKE ? OR c.domain LIKE ? OR c.description LIKE ?)")
             params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+        if date_from:
+            where_parts.append("c.captured_at>=?")
+            params.append(date_from)
+        if date_to:
+            where_parts.append("c.captured_at<=?")
+            params.append(date_to)
+        join_sql = " ".join(joins)
         where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-        total = db.execute(f"SELECT COUNT(DISTINCT c.id) FROM creatives c {joins} {where}", params).fetchone()[0]
+        order_sql = {
+            "recent": "c.captured_at DESC",
+            "oldest": "c.captured_at ASC",
+            "domain": "c.domain ASC, c.captured_at DESC",
+        }.get(sort, "c.captured_at DESC")
+        total = db.execute(f"SELECT COUNT(DISTINCT c.id) FROM creatives c {join_sql} {where}", params).fetchone()[0]
         rows = db.execute(
-            f"SELECT DISTINCT c.* FROM creatives c {joins} {where} ORDER BY c.captured_at DESC LIMIT ? OFFSET ?",
+            f"SELECT DISTINCT c.* FROM creatives c {join_sql} {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
         items = [_creative_row_to_dict(r) for r in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/platforms")
+def api_list_platforms(principal: dict = Depends(public_api_principal)):
+    with closing(connect()) as db:
+        rows = db.execute("SELECT platform, COUNT(*) n FROM creatives GROUP BY platform ORDER BY n DESC").fetchall()
+    return {"items": [{"platform": r["platform"], "creatives_count": r["n"]} for r in rows]}
 
 
 @app.get("/api/v1/creatives/{creative_id}")
@@ -1135,6 +1186,78 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
         "advertisers": [dict(r) for r in advertisers],
         "identifiers": [dict(r) for r in identifiers],
         "occurrences": [dict(r) for r in occurrences],
+    }
+
+
+def require_user_principal(principal: dict) -> int:
+    if principal.get("kind") != "user":
+        raise HTTPException(status_code=403, detail="Для этого действия нужен вход пользователя, а не серверный API-ключ")
+    return int(principal["user_id"])
+
+
+@app.post("/api/v1/auth/change-password")
+def api_change_password(payload: ChangePasswordIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        row = db.execute("SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row or not verify_password(payload.current_password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Текущий пароль указан неверно")
+        db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(payload.new_password), user_id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/runs")
+def api_create_run(payload: RunCreateIn, principal: dict = Depends(public_api_principal)):
+    """Lets a logged-in SaaS user queue a scan with their own parameters, self-service —
+    the WSL worker picks it up exactly like an ops-console run; only ownership differs."""
+    user_id = require_user_principal(principal)
+    city, key_text = payload.city.strip(), payload.key_text.strip()
+    with closing(connect()) as db:
+        active = db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE owner_user_id=? AND status IN ('queued','running')", (user_id,)
+        ).fetchone()[0]
+        if active >= 3:
+            raise HTTPException(status_code=429, detail="У вас уже 3 запуска в очереди/выполняются — подождите их завершения")
+        cur = db.execute(
+            "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id) VALUES('queued',?,?,?,?)",
+            (city, key_text, now_iso(), user_id),
+        )
+        job_id = cur.lastrowid
+        db.commit()
+    return {"id": job_id, "status": "queued", "city": city, "key_text": key_text}
+
+
+@app.get("/api/v1/runs")
+def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    limit, offset = _paging(limit, offset)
+    with closing(connect()) as db:
+        total = db.execute("SELECT COUNT(*) FROM jobs WHERE owner_user_id=?", (user_id,)).fetchone()[0]
+        rows = db.execute(
+            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text "
+            "FROM jobs WHERE owner_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/runs/{job_id}")
+def api_run_detail(job_id: int, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        job = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or job["owner_user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Запуск не найден")
+        sites = db.execute(
+            "SELECT platform,status,unique_creatives,partial_creatives,ad_signal_detected,error_text "
+            "FROM site_results WHERE job_id=? ORDER BY platform", (job_id,),
+        ).fetchall()
+    return {
+        "id": job["id"], "status": job["status"], "city": job["city"], "key_text": job["key_text"],
+        "created_at": job["created_at"], "started_at": job["started_at"], "finished_at": job["finished_at"],
+        "total_creatives": job["total_creatives"], "error_text": job["error_text"],
+        "sites": [dict(r) for r in sites],
     }
 
 

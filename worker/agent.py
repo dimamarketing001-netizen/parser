@@ -375,6 +375,8 @@ class Worker:
             )
             assert proc.stdout is not None
             buffered_lines = 0
+            last_sync = time.time()
+            sync_interval = max(5, int(os.getenv("PARSYA_SYNC_INTERVAL_SECONDS", "20")))
             for line in proc.stdout:
                 print(line, end="", flush=True)
                 log_buffer += line
@@ -384,6 +386,16 @@ class Worker:
                     self.post_log(job_id, log_buffer)
                     log_buffer = ""
                     buffered_lines = 0
+                # Sync whatever has already landed in local MySQL so the control-plane (and
+                # a user watching their run from the SaaS frontend) sees creatives arrive
+                # progressively, not only once the whole multi-platform crawl finishes.
+                now = time.time()
+                if now - last_sync >= sync_interval:
+                    last_sync = now
+                    try:
+                        self.sync_latest_mysql_run(job_id, city, key_text, run_started_at)
+                    except Exception as sync_exc:
+                        self.post_log(job_id, f"\n[worker] Промежуточная синхронизация пропущена: {type(sync_exc).__name__}: {sync_exc}\n")
             exit_code = proc.wait()
             if log_buffer:
                 self.post_log(job_id, log_buffer)
