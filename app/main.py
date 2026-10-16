@@ -161,6 +161,24 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS ix_site_results_job ON site_results(job_id);
         CREATE INDEX IF NOT EXISTS ix_site_results_status ON site_results(status);
 
+        -- Live remote-captcha-solving channel: the parser subprocess posts a screenshot
+        -- here roughly once a second while a CAPTCHA blocks it, an admin viewing the run
+        -- queues one command (click/key/text/scroll/refresh) at a time, and the parser
+        -- polls and applies it. Polling-based by design, matching the rest of this app.
+        CREATE TABLE IF NOT EXISTS browser_sessions (
+          job_id INTEGER PRIMARY KEY,
+          active INTEGER NOT NULL DEFAULT 0,
+          captcha_required INTEGER NOT NULL DEFAULT 0,
+          url TEXT,
+          title TEXT,
+          screenshot_b64 TEXT,
+          viewport_width INTEGER,
+          viewport_height INTEGER,
+          updated_at TEXT NOT NULL,
+          pending_command_json TEXT,
+          FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+        );
+
         -- Advertiser identity (ИНН) and the links that tie a creative to it. Populated by
         -- the WSL worker from ParsYa's advertiser-enrichment tables (parsya_advertiser_*).
         CREATE TABLE IF NOT EXISTS advertisers (
@@ -461,6 +479,25 @@ class RunCreateIn(BaseModel):
     key_text: str = Field(min_length=1, max_length=300)
 
 
+class BrowserStateIn(BaseModel):
+    active: bool = True
+    captcha_required: bool = False
+    url: str = Field(default="", max_length=8000)
+    title: str = Field(default="", max_length=2000)
+    screenshot_b64: str = Field(default="", max_length=4_000_000)
+    viewport_width: int = 0
+    viewport_height: int = 0
+
+
+class BrowserCommandIn(BaseModel):
+    action: str = Field(pattern="^(click|key|text|scroll|refresh)$")
+    x_ratio: float | None = None
+    y_ratio: float | None = None
+    key: str = Field(default="", max_length=20)
+    text: str = Field(default="", max_length=2000)
+    scroll_y: int = 0
+
+
 class SiteResultIn(BaseModel):
     platform: str = Field(min_length=1, max_length=255)
     url: str = Field(default="", max_length=8000)
@@ -611,7 +648,65 @@ def run_detail(request: Request, job_id: int):
         for s in site_results
     ) or '<tr><td colspan="6" class="empty">Результаты по площадкам ещё не синхронизированы</td></tr>'
     result = esc(job["result_json"] or "{}")
+    browser_panel = f"""<div class="panel" id="browserPanel" style="display:none">
+  <div class="panel-head"><h2>CAPTCHA — ручное решение</h2><span class="muted" id="browserUrl"></span></div>
+  <div style="position:relative;max-width:900px;border:1px solid var(--line);border-radius:10px;overflow:hidden;cursor:crosshair" id="browserScreenWrap">
+    <img id="browserScreen" class="remote-browser-screen" style="display:block;width:100%;max-height:65vh;object-fit:contain;background:#07101d" alt="Снимок браузера воркера">
+  </div>
+  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+    <input id="browserText" placeholder="Текст для поля ввода" style="flex:1;min-width:200px">
+    <button type="button" class="btn secondary" id="browserSendText">Отправить текст</button>
+    <button type="button" class="btn secondary" id="browserEnter">Enter</button>
+    <button type="button" class="btn secondary" id="browserTab">Tab</button>
+    <button type="button" class="btn secondary" id="browserEsc">Esc</button>
+    <button type="button" class="btn secondary" id="browserRefresh">Обновить страницу воркера</button>
+  </div>
+  <p class="help">Кликните прямо по снимку — клик будет передан в реальный Chrome воркера по тем же координатам. Снимок обновляется примерно раз в секунду.</p>
+</div>
+<script>
+(function(){{
+  const jobId = {job_id};
+  const panel = document.getElementById('browserPanel');
+  const img = document.getElementById('browserScreen');
+  const urlLabel = document.getElementById('browserUrl');
+  async function sendCommand(command) {{
+    await fetch(`/api/admin/jobs/${{jobId}}/browser/command`, {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(command),
+    }});
+  }}
+  async function poll() {{
+    try {{
+      const r = await fetch(`/api/admin/jobs/${{jobId}}/browser/state`);
+      const data = await r.json();
+      if (data.active && data.captcha_required) {{
+        panel.style.display = '';
+        if (data.screenshot_b64) img.src = 'data:image/png;base64,' + data.screenshot_b64;
+        urlLabel.textContent = data.title || data.url || '';
+      }} else {{
+        panel.style.display = 'none';
+      }}
+    }} catch (e) {{}}
+    setTimeout(poll, 1200);
+  }}
+  document.getElementById('browserScreenWrap').addEventListener('click', (e) => {{
+    const rect = img.getBoundingClientRect();
+    const x_ratio = (e.clientX - rect.left) / rect.width;
+    const y_ratio = (e.clientY - rect.top) / rect.height;
+    sendCommand({{action: 'click', x_ratio, y_ratio}});
+  }});
+  document.getElementById('browserSendText').addEventListener('click', () => {{
+    const text = document.getElementById('browserText').value;
+    if (text) sendCommand({{action: 'text', text}});
+  }});
+  document.getElementById('browserEnter').addEventListener('click', () => sendCommand({{action: 'key', key: 'ENTER'}}));
+  document.getElementById('browserTab').addEventListener('click', () => sendCommand({{action: 'key', key: 'TAB'}}));
+  document.getElementById('browserEsc').addEventListener('click', () => sendCommand({{action: 'key', key: 'ESCAPE'}}));
+  document.getElementById('browserRefresh').addEventListener('click', () => sendCommand({{action: 'refresh'}}));
+  poll();
+}})();
+</script>"""
     body = f"""<div class="grid"><div class="metric"><div class="label">Статус</div><div class="value" style="font-size:21px">{esc(job["status"])}</div><div class="hint">Код завершения: {esc(job["exit_code"])}</div></div><div class="metric"><div class="label">Город</div><div class="value" style="font-size:21px">{esc(job["city"])}</div></div><div class="metric"><div class="label">Креативы синхронизированы</div><div class="value">{job["total_creatives"]}</div></div><div class="metric"><div class="label">Воркер</div><div class="value" style="font-size:18px;overflow-wrap:anywhere">{esc(job["worker_id"] or "ожидание")}</div></div></div>
+{browser_panel}
 <div class="detail-grid"><div class="panel"><h2>Детали задания</h2><table><tbody><tr><th>Ключевой запрос</th><td>{esc(job["key_text"])}</td></tr><tr><th>Создан</th><td>{esc(job["created_at"])}</td></tr><tr><th>Начат</th><td>{esc(job["started_at"] or "—")}</td></tr><tr><th>Завершён</th><td>{esc(job["finished_at"] or "—")}</td></tr><tr><th>Ошибка</th><td class="error-text">{esc(job["error_text"] or "—")}</td></tr></tbody></table><h2 style="margin-top:22px">Результаты сканирования площадок</h2><div class="table-wrap"><table><thead><tr><th>Площадка</th><th>Статус</th><th>Креативы</th><th>Сигнал рекламы</th><th>Время, сек.</th><th>Ошибка</th></tr></thead><tbody>{scan_rows}</tbody></table></div><h2 style="margin-top:22px">Обнаружения по рекламным площадкам</h2><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div><div class="panel"><div class="panel-head"><h2>Лог воркера</h2><button class="btn secondary" onclick="location.reload()">Обновить</button></div><div class="log mono">{esc(job["log_text"] or "Ожидание подключения воркера…")}</div></div></div><div class="panel"><h2>Результат</h2><pre class="log mono">{result}</pre></div>"""
     return page(request, f"Запуск #{job_id}", body, "runs")
 
@@ -955,6 +1050,93 @@ def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = He
         if job["worker_id"]:
             db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=?,last_error=? WHERE worker_id=?",
                        (now_iso(), payload.error or None, job["worker_id"]))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/worker/jobs/{job_id}/browser/state")
+def worker_browser_state(job_id: int, payload: BrowserStateIn, authorization: str | None = Header(default=None)):
+    """Parser subprocess posts a screenshot here roughly once a second while blocked on a
+    CAPTCHA, so an admin watching the run can see and solve it (see /admin/jobs/.../browser)."""
+    worker_auth(authorization)
+    now = now_iso()
+    with closing(connect()) as db:
+        db.execute(
+            "INSERT INTO browser_sessions(job_id,active,captcha_required,url,title,screenshot_b64,viewport_width,viewport_height,updated_at,pending_command_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(job_id) DO UPDATE SET "
+            "active=excluded.active,captcha_required=excluded.captcha_required,url=excluded.url,title=excluded.title,"
+            "screenshot_b64=excluded.screenshot_b64,viewport_width=excluded.viewport_width,"
+            "viewport_height=excluded.viewport_height,updated_at=excluded.updated_at",
+            (job_id, 1 if payload.active else 0, 1 if payload.captcha_required else 0, payload.url, payload.title,
+             payload.screenshot_b64, payload.viewport_width, payload.viewport_height, now),
+        )
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/worker/jobs/{job_id}/browser/command")
+def worker_browser_command(job_id: int, authorization: str | None = Header(default=None)):
+    """Parser subprocess polls this for the one pending click/key/text/scroll/refresh
+    command an admin queued; delivered at most once (cleared on read)."""
+    worker_auth(authorization)
+    command = None
+    with closing(connect()) as db:
+        row = db.execute("SELECT pending_command_json FROM browser_sessions WHERE job_id=?", (job_id,)).fetchone()
+        if row and row["pending_command_json"]:
+            command = json.loads(row["pending_command_json"])
+            db.execute("UPDATE browser_sessions SET pending_command_json=NULL WHERE job_id=?", (job_id,))
+            db.commit()
+    return {"command": command}
+
+
+@app.post("/api/worker/jobs/{job_id}/browser/close")
+def worker_browser_close(job_id: int, authorization: str | None = Header(default=None)):
+    worker_auth(authorization)
+    with closing(connect()) as db:
+        db.execute(
+            "UPDATE browser_sessions SET active=0,captcha_required=0,pending_command_json=NULL,updated_at=? WHERE job_id=?",
+            (now_iso(), job_id),
+        )
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/admin/jobs/{job_id}/browser/state")
+def admin_browser_state(request: Request, job_id: int):
+    if not auth_page(request):
+        raise HTTPException(status_code=401)
+    with closing(connect()) as db:
+        row = db.execute("SELECT * FROM browser_sessions WHERE job_id=?", (job_id,)).fetchone()
+    if not row:
+        return {"active": False, "captcha_required": False}
+    return {
+        "active": bool(row["active"]), "captcha_required": bool(row["captcha_required"]),
+        "url": row["url"], "title": row["title"], "screenshot_b64": row["screenshot_b64"],
+        "viewport_width": row["viewport_width"], "viewport_height": row["viewport_height"],
+        "updated_at": row["updated_at"],
+    }
+
+
+@app.post("/api/admin/jobs/{job_id}/browser/command")
+def admin_browser_command(request: Request, job_id: int, payload: BrowserCommandIn):
+    if not auth_page(request):
+        raise HTTPException(status_code=401)
+    command: dict[str, Any] = {"action": payload.action}
+    if payload.action == "click":
+        if payload.x_ratio is None or payload.y_ratio is None:
+            raise HTTPException(status_code=400, detail="x_ratio/y_ratio обязательны для click")
+        command.update({"x_ratio": payload.x_ratio, "y_ratio": payload.y_ratio})
+    elif payload.action == "key":
+        command["key"] = payload.key
+    elif payload.action == "text":
+        command["text"] = payload.text
+    elif payload.action == "scroll":
+        command["scroll_y"] = payload.scroll_y
+    with closing(connect()) as db:
+        row = db.execute("SELECT job_id FROM browser_sessions WHERE job_id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Браузерная сессия для этого задания не активна")
+        db.execute("UPDATE browser_sessions SET pending_command_json=? WHERE job_id=?", (json.dumps(command), job_id))
         db.commit()
     return {"ok": True}
 
