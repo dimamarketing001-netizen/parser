@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import itertools
 import json
 import os
 import socket
@@ -12,6 +13,15 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Any
+
+
+def _chunked(items, size):
+    it = iter(items)
+    while True:
+        chunk = list(itertools.islice(it, size))
+        if not chunk:
+            return
+        yield chunk
 
 import requests
 
@@ -170,6 +180,7 @@ class Worker:
                 (run_id,),
             )
             batch: list[dict[str, Any]] = []
+            synced_creative_hashes: set[str] = set()
 
             def send_creative_batch(items: list[dict[str, Any]]) -> int:
                 if not items:
@@ -189,8 +200,11 @@ class Worker:
                 if len(html_text) > MAX_HTML_CHARS:
                     html_text = ""
                 captured = row.get("observed_at")
+                creative_hash = row.get("creative_hash") or ""
+                if creative_hash:
+                    synced_creative_hashes.add(creative_hash)
                 batch.append({
-                    "creative_hash": row.get("creative_hash") or "",
+                    "creative_hash": creative_hash,
                     "platform": row.get("platform") or "unknown",
                     "domain": row.get("domain") or "",
                     "title": row.get("title") or "",
@@ -210,11 +224,15 @@ class Worker:
                 sent_creatives += send_creative_batch(batch)
             cursor.close()
 
+            sent_links = self._sync_advertiser_links(connection, job_id, synced_creative_hashes)
+
             summary["site_results_synced"] = sent_sites
             summary["creative_occurrences_synced"] = sent_creatives
+            summary["advertiser_links_synced"] = sent_links
             self.post_log(
                 job_id,
-                f"\n[worker] MySQL run_id={run_id}: площадок отправлено={sent_sites}, обнаружений отправлено={sent_creatives}.\n",
+                f"\n[worker] MySQL run_id={run_id}: площадок отправлено={sent_sites}, обнаружений отправлено={sent_creatives}, "
+                f"связей рекламодателя отправлено={sent_links}.\n",
             )
         except Exception as exc:
             self.post_log(job_id, f"\n[worker] Ошибка синхронизации MySQL: {type(exc).__name__}: {exc}\n")
@@ -225,6 +243,102 @@ class Worker:
                 except Exception:
                     pass
         return summary
+
+    def _sync_advertiser_links(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies ИНН/advertiser identity + campaign/banner/client IDs for creatives already
+        uploaded in this run, from ParsYa's advertiser-enrichment tables (parsya_advertiser_*,
+        parsya_ad_creative_identifier_snapshots). Scoped to this run's creative hashes only, so
+        a run never re-sends the whole history of every past advertiser link."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        links_by_hash: dict[str, dict[str, Any]] = {}
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT l.source_creative_hash, l.content_fingerprint, l.association_method, l.confidence, "
+                        f"e.identity_key, e.tax_id, e.canonical_name "
+                        f"FROM parsya_advertiser_creative_links l "
+                        f"JOIN parsya_advertiser_entities e ON e.entity_id = l.entity_id "
+                        f"WHERE l.source_creative_hash IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("source_creative_hash") or ""
+                        if not h or not row.get("identity_key"):
+                            continue
+                        prev = links_by_hash.get(h)
+                        if prev is None or float(row.get("confidence") or 0) > float(prev.get("confidence") or 0):
+                            links_by_hash[h] = row
+            finally:
+                cursor.close()
+
+            identifiers_by_hash: dict[str, dict[str, set]] = {}
+            if links_by_hash:
+                cursor = connection.cursor(dictionary=True)
+                try:
+                    for chunk in _chunked(sorted(links_by_hash.keys()), 200):
+                        placeholders = ",".join(["%s"] * len(chunk))
+                        cursor.execute(
+                            f"SELECT source_creative_hash, client_ids_json, campaign_ids_json, "
+                            f"banner_ids_json, creative_ids_json "
+                            f"FROM parsya_ad_creative_identifier_snapshots "
+                            f"WHERE source_creative_hash IN ({placeholders})",
+                            chunk,
+                        )
+                        for row in cursor.fetchall():
+                            h = row.get("source_creative_hash") or ""
+                            bucket = identifiers_by_hash.setdefault(h, {
+                                "client_id_candidate": set(), "campaign_id_candidate": set(),
+                                "banner_id_candidate": set(), "creative_id_candidate": set(),
+                            })
+                            for id_type, field in (
+                                ("client_id_candidate", "client_ids_json"),
+                                ("campaign_id_candidate", "campaign_ids_json"),
+                                ("banner_id_candidate", "banner_ids_json"),
+                                ("creative_id_candidate", "creative_ids_json"),
+                            ):
+                                try:
+                                    values = json.loads(row.get(field) or "[]")
+                                except Exception:
+                                    values = []
+                                bucket[id_type].update(str(v) for v in values if v)
+                finally:
+                    cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения advertiser-links из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        link_items: list[dict[str, Any]] = []
+        for h, row in links_by_hash.items():
+            ids = identifiers_by_hash.get(h, {})
+            link_items.append({
+                "creative_hash": h,
+                "content_fingerprint": str(row.get("content_fingerprint") or ""),
+                "advertiser_identity_key": str(row.get("identity_key") or ""),
+                "advertiser_inn": str(row.get("tax_id") or ""),
+                "advertiser_name": str(row.get("canonical_name") or ""),
+                "association_method": str(row.get("association_method") or "unknown")[:80],
+                "confidence": float(row["confidence"]) if row.get("confidence") is not None else None,
+                "identifiers": [
+                    {"type": id_type, "value": value}
+                    for id_type, values in ids.items() for value in values
+                ][:50],
+            })
+
+        sent = 0
+        for chunk in _chunked(link_items, 50):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/advertiser-links", json={"links": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки advertiser-links: {type(exc).__name__}: {exc}\n")
+        return sent
 
     def execute_job(self, job: dict[str, Any]) -> None:
         job_id = int(job["id"])
@@ -240,6 +354,7 @@ class Worker:
         env["PARSYA_CITY"] = city
         env["PARSYA_KEY_TEXT"] = key_text
         env["PARSYA_SOURCE_MODE"] = "remote-worker"
+        env["PARSYA_JOB_ID"] = str(job_id)
         env["PYTHONUNBUFFERED"] = "1"
         command = [self.python, str(self.script)]
         started_at = time.time()

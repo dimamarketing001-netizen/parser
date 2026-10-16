@@ -26,6 +26,7 @@ DB_PATH = Path(os.getenv("PARSYA_SQLITE_PATH", DATA_DIR / "control.sqlite3")).re
 ADMIN_USER = os.getenv("PARSYA_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("PARSYA_ADMIN_PASSWORD", "")
 WORKER_TOKEN = os.getenv("PARSYA_WORKER_TOKEN", "")
+PUBLIC_API_TOKEN = os.getenv("PARSYA_PUBLIC_API_TOKEN", "")
 SECRET_KEY = os.getenv("PARSYA_SECRET_KEY", "")
 COOKIE_SECURE = os.getenv("PARSYA_COOKIE_SECURE", "1").strip().lower() in {"1", "true", "yes"}
 MAX_HTML_CHARS = 2_000_000
@@ -146,7 +147,58 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_site_results_job ON site_results(job_id);
         CREATE INDEX IF NOT EXISTS ix_site_results_status ON site_results(status);
+
+        -- Advertiser identity (ИНН) and the links that tie a creative to it. Populated by
+        -- the WSL worker from ParsYa's advertiser-enrichment tables (parsya_advertiser_*).
+        CREATE TABLE IF NOT EXISTS advertisers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          identity_key TEXT NOT NULL UNIQUE,
+          inn TEXT,
+          canonical_name TEXT,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_advertisers_inn ON advertisers(inn);
+
+        CREATE TABLE IF NOT EXISTS creative_advertiser_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          creative_id INTEGER NOT NULL,
+          advertiser_id INTEGER NOT NULL,
+          association_method TEXT NOT NULL,
+          confidence REAL,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          UNIQUE(creative_id, advertiser_id, association_method),
+          FOREIGN KEY(creative_id) REFERENCES creatives(id) ON DELETE CASCADE,
+          FOREIGN KEY(advertiser_id) REFERENCES advertisers(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_cal_advertiser ON creative_advertiser_links(advertiser_id);
+        CREATE INDEX IF NOT EXISTS ix_cal_creative ON creative_advertiser_links(creative_id);
+
+        -- campaign_id / banner_id / client_id / creative_id observed for a creative, so the
+        -- same visual/text creative served under several ad-platform campaigns stays one
+        -- row in `creatives` while every campaign run it appeared in is still queryable.
+        CREATE TABLE IF NOT EXISTS creative_identifiers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          creative_id INTEGER NOT NULL,
+          identifier_type TEXT NOT NULL,
+          identifier_value TEXT NOT NULL,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          UNIQUE(creative_id, identifier_type, identifier_value),
+          FOREIGN KEY(creative_id) REFERENCES creatives(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_ci_creative ON creative_identifiers(creative_id);
+        CREATE INDEX IF NOT EXISTS ix_ci_value ON creative_identifiers(identifier_type, identifier_value);
         """)
+        # content_fingerprint groups creative rows that are the same image/text/title
+        # creative re-detected under a different creative_hash (e.g. a different platform
+        # markup or a different campaign run). ALTER TABLE ADD COLUMN has no IF NOT EXISTS
+        # in SQLite, so guard it with a pragma check to stay idempotent across restarts.
+        existing_cols = {row["name"] for row in db.execute("PRAGMA table_info(creatives)").fetchall()}
+        if "content_fingerprint" not in existing_cols:
+            db.execute("ALTER TABLE creatives ADD COLUMN content_fingerprint TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_fingerprint ON creatives(content_fingerprint)")
         db.commit()
 
 
@@ -241,6 +293,7 @@ class FinishIn(BaseModel):
 
 class CreativeIn(BaseModel):
     creative_hash: str = Field(default="", max_length=128)
+    content_fingerprint: str = Field(default="", max_length=128)
     platform: str = Field(min_length=1, max_length=255)
     domain: str = Field(default="", max_length=512)
     title: str = Field(default="", max_length=12000)
@@ -256,6 +309,26 @@ class CreativeIn(BaseModel):
 
 class CreativesBatch(BaseModel):
     creatives: list[CreativeIn] = Field(max_length=20)
+
+
+class IdentifierIn(BaseModel):
+    type: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=500)
+
+
+class AdvertiserLinkIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    content_fingerprint: str = Field(default="", max_length=128)
+    advertiser_identity_key: str = Field(min_length=1, max_length=191)
+    advertiser_inn: str = Field(default="", max_length=32)
+    advertiser_name: str = Field(default="", max_length=500)
+    association_method: str = Field(default="unknown", max_length=80)
+    confidence: float | None = None
+    identifiers: list[IdentifierIn] = Field(default_factory=list, max_length=50)
+
+
+class AdvertiserLinksBatch(BaseModel):
+    links: list[AdvertiserLinkIn] = Field(max_length=100)
 
 
 class SiteResultIn(BaseModel):
@@ -549,9 +622,11 @@ def worker_creatives(job_id: int, payload: CreativesBatch, authorization: str | 
             html_gzip = gzip.compress(item.html.encode("utf-8", "replace"), compresslevel=6, mtime=0) if item.html else None
             exists = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (content_hash,)).fetchone()
             cur = db.execute(
-                "INSERT INTO creatives(creative_hash,platform,domain,title,description,image_url,destination_url,source_page_url,detection_method,recognition_status,captured_at,html_gzip,html_sha256,first_job_id,last_job_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(creative_hash) DO UPDATE SET "
-                "last_job_id=excluded.last_job_id,domain=CASE WHEN creatives.domain='' THEN excluded.domain ELSE creatives.domain END,"
+                "INSERT INTO creatives(creative_hash,content_fingerprint,platform,domain,title,description,image_url,destination_url,source_page_url,detection_method,recognition_status,captured_at,html_gzip,html_sha256,first_job_id,last_job_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(creative_hash) DO UPDATE SET "
+                "last_job_id=excluded.last_job_id,"
+                "content_fingerprint=CASE WHEN COALESCE(creatives.content_fingerprint,'')='' THEN excluded.content_fingerprint ELSE creatives.content_fingerprint END,"
+                "domain=CASE WHEN creatives.domain='' THEN excluded.domain ELSE creatives.domain END,"
                 "title=CASE WHEN creatives.title='' THEN excluded.title ELSE creatives.title END,"
                 "description=CASE WHEN creatives.description='' THEN excluded.description ELSE creatives.description END,"
                 "image_url=CASE WHEN creatives.image_url='' THEN excluded.image_url ELSE creatives.image_url END,"
@@ -559,7 +634,7 @@ def worker_creatives(job_id: int, payload: CreativesBatch, authorization: str | 
                 "html_gzip=CASE WHEN excluded.html_gzip IS NOT NULL THEN excluded.html_gzip ELSE creatives.html_gzip END,"
                 "html_sha256=CASE WHEN excluded.html_sha256<>'' THEN excluded.html_sha256 ELSE creatives.html_sha256 END,"
                 "recognition_status=CASE WHEN excluded.recognition_status='recognized' THEN 'recognized' ELSE creatives.recognition_status END",
-                (content_hash, platform, item.domain, item.title, item.description, item.image_url, item.destination_url,
+                (content_hash, item.content_fingerprint, platform, item.domain, item.title, item.description, item.image_url, item.destination_url,
                  source_url, item.detection_method, item.recognition_status, captured_at, html_gzip, digest,
                  job_id, job_id),
             )
@@ -575,6 +650,67 @@ def worker_creatives(job_id: int, payload: CreativesBatch, authorization: str | 
         db.execute("UPDATE jobs SET total_creatives=(SELECT COUNT(DISTINCT creative_id) FROM occurrences WHERE job_id=?) WHERE id=?", (job_id, job_id))
         db.commit()
     return {"ok": True, "accepted": accepted, "new_creatives": new_count}
+
+
+@app.post("/api/worker/jobs/{job_id}/advertiser-links")
+def worker_advertiser_links(job_id: int, payload: AdvertiserLinksBatch, authorization: str | None = Header(default=None)):
+    """Accepts advertiser (ИНН) identity links for creatives already uploaded in this job.
+
+    A creative that has not been synced yet (no matching creative_hash) is skipped rather
+    than guessed at: the worker always sends creatives before advertiser-links for the same
+    job, so a miss here means the creative genuinely was not part of this run's batch.
+    """
+    worker_auth(authorization)
+    accepted = 0
+    skipped_unknown_creative = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        now = now_iso()
+        for link in payload.links:
+            creative = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (link.creative_hash,)).fetchone()
+            if not creative:
+                skipped_unknown_creative += 1
+                continue
+            creative_id = int(creative["id"])
+            if link.content_fingerprint:
+                db.execute(
+                    "UPDATE creatives SET content_fingerprint=? WHERE id=? AND COALESCE(content_fingerprint,'')=''",
+                    (link.content_fingerprint, creative_id),
+                )
+            inn = link.advertiser_inn.strip() or None
+            db.execute(
+                "INSERT INTO advertisers(identity_key,inn,canonical_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(identity_key) DO UPDATE SET "
+                "inn=COALESCE(advertisers.inn,excluded.inn),"
+                "canonical_name=CASE WHEN COALESCE(advertisers.canonical_name,'')='' THEN excluded.canonical_name ELSE advertisers.canonical_name END,"
+                "last_seen_at=excluded.last_seen_at",
+                (link.advertiser_identity_key, inn, link.advertiser_name or None, now, now),
+            )
+            advertiser = db.execute(
+                "SELECT id FROM advertisers WHERE identity_key=?", (link.advertiser_identity_key,)
+            ).fetchone()
+            advertiser_id = int(advertiser["id"])
+            db.execute(
+                "INSERT INTO creative_advertiser_links(creative_id,advertiser_id,association_method,confidence,first_seen_at,last_seen_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(creative_id,advertiser_id,association_method) DO UPDATE SET "
+                "confidence=excluded.confidence,last_seen_at=excluded.last_seen_at",
+                (creative_id, advertiser_id, link.association_method, link.confidence, now, now),
+            )
+            for ident in link.identifiers:
+                id_type = ident.type.strip()[:64]
+                id_value = ident.value.strip()[:500]
+                if not id_type or not id_value:
+                    continue
+                db.execute(
+                    "INSERT INTO creative_identifiers(creative_id,identifier_type,identifier_value,first_seen_at,last_seen_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(creative_id,identifier_type,identifier_value) DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                    (creative_id, id_type, id_value, now, now),
+                )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted, "skipped_unknown_creative": skipped_unknown_creative}
 
 
 @app.post("/api/worker/jobs/{job_id}/sites")
@@ -624,6 +760,176 @@ def worker_status(authorization: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("SELECT worker_id,hostname,version,last_seen,state,current_job_id,last_error FROM workers ORDER BY last_seen DESC").fetchall()
     return {"workers": [dict(row) for row in rows]}
+
+
+def public_api_auth(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    if not PUBLIC_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Public API is not configured (PARSYA_PUBLIC_API_TOKEN unset)")
+    if not x_api_key or not hmac.compare_digest(x_api_key, PUBLIC_API_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+
+def _paging(limit: int, offset: int) -> tuple[int, int]:
+    return max(1, min(limit, 100)), max(0, offset)
+
+
+def _creative_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "creative_hash": row["creative_hash"],
+        "content_fingerprint": row["content_fingerprint"],
+        "platform": row["platform"],
+        "domain": row["domain"],
+        "title": row["title"],
+        "description": row["description"],
+        "image_url": row["image_url"],
+        "destination_url": row["destination_url"],
+        "detection_method": row["detection_method"],
+        "recognition_status": row["recognition_status"],
+        "captured_at": row["captured_at"],
+    }
+
+
+@app.get("/api/v1/advertisers", dependencies=[Depends(public_api_auth)])
+def api_list_advertisers(q: str = "", limit: int = 25, offset: int = 0):
+    limit, offset = _paging(limit, offset)
+    with closing(connect()) as db:
+        where, params = "", []
+        if q:
+            where = "WHERE a.inn LIKE ? OR a.canonical_name LIKE ?"
+            params = [f"%{q}%", f"%{q}%"]
+        total = db.execute(f"SELECT COUNT(*) FROM advertisers a {where}", params).fetchone()[0]
+        rows = db.execute(
+            f"SELECT a.id,a.inn,a.canonical_name,a.first_seen_at,a.last_seen_at,"
+            f"(SELECT COUNT(*) FROM creative_advertiser_links l WHERE l.advertiser_id=a.id) AS creatives_count "
+            f"FROM advertisers a {where} ORDER BY a.last_seen_at DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+        items = [
+            {"id": r["id"], "inn": r["inn"], "name": r["canonical_name"], "creatives_count": r["creatives_count"],
+             "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"]}
+            for r in rows
+        ]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/advertisers/{inn}/creatives", dependencies=[Depends(public_api_auth)])
+def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0):
+    limit, offset = _paging(limit, offset)
+    with closing(connect()) as db:
+        advertiser = db.execute("SELECT id,inn,canonical_name FROM advertisers WHERE inn=?", (inn,)).fetchone()
+        if not advertiser:
+            raise HTTPException(status_code=404, detail="Рекламодатель с таким ИНН не найден")
+        creative_rows = db.execute(
+            "SELECT c.* FROM creatives c "
+            "JOIN creative_advertiser_links l ON l.creative_id=c.id "
+            "WHERE l.advertiser_id=? ORDER BY c.captured_at DESC",
+            (advertiser["id"],),
+        ).fetchall()
+        # Group creative rows that are the same underlying ad (same content_fingerprint)
+        # into one "variant" — this is how a marketer sees "one creative, run under several
+        # campaigns/platforms" instead of N unrelated-looking rows.
+        groups: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for row in creative_rows:
+            key = row["content_fingerprint"] or f"hash:{row['creative_hash']}"
+            if key not in groups:
+                groups[key] = {
+                    "group_key": key,
+                    "representative": _creative_row_to_dict(row),
+                    "creative_ids": [],
+                    "platforms": set(),
+                    "campaign_ids": set(),
+                    "banner_ids": set(),
+                    "client_ids": set(),
+                    "first_seen_at": row["captured_at"],
+                    "last_seen_at": row["captured_at"],
+                }
+                order.append(key)
+            group = groups[key]
+            group["creative_ids"].append(row["id"])
+            group["platforms"].add(row["platform"])
+            group["first_seen_at"] = min(group["first_seen_at"], row["captured_at"])
+            group["last_seen_at"] = max(group["last_seen_at"], row["captured_at"])
+            ident_rows = db.execute(
+                "SELECT identifier_type,identifier_value FROM creative_identifiers WHERE creative_id=?", (row["id"],)
+            ).fetchall()
+            for ident in ident_rows:
+                bucket = {"campaign_id_candidate": "campaign_ids", "banner_id_candidate": "banner_ids",
+                          "client_id_candidate": "client_ids"}.get(ident["identifier_type"])
+                if bucket:
+                    group[bucket].add(ident["identifier_value"])
+        variants = []
+        for key in order[offset:offset + limit]:
+            group = groups[key]
+            variants.append({
+                **{k: v for k, v in group.items() if k not in {"platforms", "campaign_ids", "banner_ids", "client_ids"}},
+                "platforms": sorted(group["platforms"]),
+                "campaign_ids": sorted(group["campaign_ids"]),
+                "banner_ids": sorted(group["banner_ids"]),
+                "client_ids": sorted(group["client_ids"]),
+            })
+    return {
+        "advertiser": {"id": advertiser["id"], "inn": advertiser["inn"], "name": advertiser["canonical_name"]},
+        "variants": variants,
+        "total_variants": len(order),
+        "total_creative_rows": len(creative_rows),
+        "limit": limit, "offset": offset,
+    }
+
+
+@app.get("/api/v1/creatives", dependencies=[Depends(public_api_auth)])
+def api_list_creatives(inn: str = "", platform: str = "", q: str = "", limit: int = 50, offset: int = 0):
+    limit, offset = _paging(limit, offset)
+    with closing(connect()) as db:
+        joins = ""
+        where_parts = []
+        params: list[Any] = []
+        if inn:
+            joins = "JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id"
+            where_parts.append("a.inn=?")
+            params.append(inn)
+        if platform:
+            where_parts.append("c.platform=?")
+            params.append(platform)
+        if q:
+            where_parts.append("(c.title LIKE ? OR c.domain LIKE ? OR c.description LIKE ?)")
+            params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        total = db.execute(f"SELECT COUNT(DISTINCT c.id) FROM creatives c {joins} {where}", params).fetchone()[0]
+        rows = db.execute(
+            f"SELECT DISTINCT c.* FROM creatives c {joins} {where} ORDER BY c.captured_at DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+        items = [_creative_row_to_dict(r) for r in rows]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/creatives/{creative_id}", dependencies=[Depends(public_api_auth)])
+def api_creative_detail(creative_id: int):
+    with closing(connect()) as db:
+        row = db.execute("SELECT * FROM creatives WHERE id=?", (creative_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Креатив не найден")
+        advertisers = db.execute(
+            "SELECT a.inn,a.canonical_name,l.association_method,l.confidence FROM creative_advertiser_links l "
+            "JOIN advertisers a ON a.id=l.advertiser_id WHERE l.creative_id=?",
+            (creative_id,),
+        ).fetchall()
+        identifiers = db.execute(
+            "SELECT identifier_type,identifier_value FROM creative_identifiers WHERE creative_id=?",
+            (creative_id,),
+        ).fetchall()
+        occurrences = db.execute(
+            "SELECT job_id,platform,source_page_url,observed_at FROM occurrences WHERE creative_id=? ORDER BY observed_at DESC LIMIT 100",
+            (creative_id,),
+        ).fetchall()
+    return {
+        "creative": _creative_row_to_dict(row),
+        "advertisers": [dict(r) for r in advertisers],
+        "identifiers": [dict(r) for r in identifiers],
+        "occurrences": [dict(r) for r in occurrences],
+    }
 
 
 @app.get("/api/admin/status")
