@@ -56,7 +56,7 @@ if FRONTEND_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=FRONTEND_ORIGINS,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
         allow_credentials=False,
     )
@@ -178,6 +178,30 @@ def init_db() -> None:
           pending_command_json TEXT,
           FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
         );
+
+        -- User-curated collections ("Подборки") of saved creatives. An item is keyed by
+        -- content_fingerprint when known (so saving one platform variant of a creative
+        -- shows it saved everywhere that creative appears), falling back to creative_hash.
+        CREATE TABLE IF NOT EXISTS collections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_user_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_collections_owner ON collections(owner_user_id);
+        CREATE TABLE IF NOT EXISTS collection_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          collection_id INTEGER NOT NULL,
+          group_key TEXT NOT NULL,
+          representative_creative_id INTEGER NOT NULL,
+          added_at TEXT NOT NULL,
+          UNIQUE(collection_id, group_key),
+          FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+          FOREIGN KEY(representative_creative_id) REFERENCES creatives(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_collection_items_collection ON collection_items(collection_id);
 
         -- Advertiser identity (ИНН) and the links that tie a creative to it. Populated by
         -- the WSL worker from ParsYa's advertiser-enrichment tables (parsya_advertiser_*).
@@ -496,6 +520,16 @@ class BrowserCommandIn(BaseModel):
     key: str = Field(default="", max_length=20)
     text: str = Field(default="", max_length=2000)
     scroll_y: int = 0
+
+
+class CollectionCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=500)
+
+
+class CollectionItemIn(BaseModel):
+    group_key: str = Field(min_length=1, max_length=191)
+    creative_id: int
 
 
 class SiteResultIn(BaseModel):
@@ -1441,6 +1475,128 @@ def api_run_detail(job_id: int, principal: dict = Depends(public_api_principal))
         "total_creatives": job["total_creatives"], "error_text": job["error_text"],
         "sites": [dict(r) for r in sites],
     }
+
+
+@app.get("/api/v1/collections")
+def api_list_collections(principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT c.id,c.name,c.description,c.created_at,"
+            "(SELECT COUNT(*) FROM collection_items i WHERE i.collection_id=c.id) AS items_count "
+            "FROM collections c WHERE c.owner_user_id=? ORDER BY c.created_at DESC",
+            (user_id,),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/api/v1/collections")
+def api_create_collection(payload: CollectionCreateIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        cur = db.execute(
+            "INSERT INTO collections(owner_user_id,name,description,created_at) VALUES(?,?,?,?)",
+            (user_id, payload.name.strip(), payload.description.strip(), now_iso()),
+        )
+        collection_id = cur.lastrowid
+        db.commit()
+    return {"id": collection_id, "name": payload.name.strip()}
+
+
+def _require_own_collection(db, collection_id, user_id):
+    row = db.execute("SELECT id FROM collections WHERE id=? AND owner_user_id=?", (collection_id, user_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+
+
+@app.delete("/api/v1/collections/{collection_id}")
+def api_delete_collection(collection_id: int, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        db.execute("DELETE FROM collections WHERE id=?", (collection_id,))
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/collections/{collection_id}/items")
+def api_list_collection_items(collection_id: int, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        rows = db.execute(
+            "SELECT i.group_key, i.added_at, c.* FROM collection_items i "
+            "JOIN creatives c ON c.id=i.representative_creative_id "
+            "WHERE i.collection_id=? ORDER BY i.added_at DESC",
+            (collection_id,),
+        ).fetchall()
+    items = []
+    for r in rows:
+        d = _creative_row_to_dict(r)
+        d["group_key"] = r["group_key"]
+        d["added_at"] = r["added_at"]
+        items.append(d)
+    return {"items": items}
+
+
+@app.post("/api/v1/collections/{collection_id}/items")
+def api_add_collection_item(collection_id: int, payload: CollectionItemIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        creative = db.execute("SELECT id FROM creatives WHERE id=?", (payload.creative_id,)).fetchone()
+        if not creative:
+            raise HTTPException(status_code=404, detail="Креатив не найден")
+        db.execute(
+            "INSERT INTO collection_items(collection_id,group_key,representative_creative_id,added_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(collection_id,group_key) DO NOTHING",
+            (collection_id, payload.group_key, payload.creative_id, now_iso()),
+        )
+        db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/v1/collections/{collection_id}/items/{group_key}")
+def api_remove_collection_item(collection_id: int, group_key: str, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        db.execute("DELETE FROM collection_items WHERE collection_id=? AND group_key=?", (collection_id, group_key))
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/coverage")
+def api_coverage(principal: dict = Depends(public_api_principal)):
+    """Real per-platform quality stats for the "Источники и качество" screen — no
+    placeholder numbers, everything here comes straight from synced creative data."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        platform_rows = db.execute(
+            "SELECT platform, COUNT(*) total, "
+            "SUM(CASE WHEN recognition_status='recognized' THEN 1 ELSE 0 END) recognized, "
+            "SUM(CASE WHEN recognition_status='partial' THEN 1 ELSE 0 END) partial, "
+            "MAX(captured_at) last_captured_at "
+            "FROM creatives GROUP BY platform ORDER BY total DESC"
+        ).fetchall()
+        with_advertiser_rows = db.execute(
+            "SELECT c.platform, COUNT(DISTINCT c.id) n FROM creatives c "
+            "JOIN creative_advertiser_links l ON l.creative_id=c.id GROUP BY c.platform"
+        ).fetchall()
+        with_advertiser = {r["platform"]: r["n"] for r in with_advertiser_rows}
+        totals = {
+            "creatives": db.execute("SELECT COUNT(*) FROM creatives").fetchone()[0],
+            "advertisers": db.execute("SELECT COUNT(*) FROM advertisers").fetchone()[0],
+            "creatives_with_advertiser": db.execute("SELECT COUNT(DISTINCT creative_id) FROM creative_advertiser_links").fetchone()[0],
+        }
+    platforms = []
+    for r in platform_rows:
+        platforms.append({
+            "platform": r["platform"], "total": r["total"], "recognized": r["recognized"],
+            "partial": r["partial"], "with_advertiser": with_advertiser.get(r["platform"], 0),
+            "last_captured_at": r["last_captured_at"],
+        })
+    return {"platforms": platforms, "totals": totals}
 
 
 @app.get("/api/admin/status")
