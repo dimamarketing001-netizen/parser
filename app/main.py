@@ -1599,6 +1599,42 @@ def api_coverage(principal: dict = Depends(public_api_principal)):
     return {"platforms": platforms, "totals": totals}
 
 
+@app.get("/api/v1/analytics/cross-platform")
+def api_cross_platform_reuse(principal: dict = Depends(public_api_principal)):
+    """Creatives (grouped by content_fingerprint) seen on more than one platform —
+    the clearest signal that a campaign is real and scaled, not a one-off test."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT c.content_fingerprint, COUNT(DISTINCT o.platform) AS platform_count, "
+            "GROUP_CONCAT(DISTINCT o.platform) AS platforms, "
+            "MIN(c.captured_at) AS first_seen_at, MAX(c.captured_at) AS last_seen_at "
+            "FROM creatives c JOIN occurrences o ON o.creative_id=c.id "
+            "WHERE c.content_fingerprint IS NOT NULL AND c.content_fingerprint != '' "
+            "GROUP BY c.content_fingerprint HAVING platform_count > 1 "
+            "ORDER BY platform_count DESC, last_seen_at DESC LIMIT 30"
+        ).fetchall()
+        items = []
+        for r in rows:
+            rep = db.execute(
+                "SELECT domain,title,description,image_url,detection_method FROM creatives "
+                "WHERE content_fingerprint=? ORDER BY captured_at DESC LIMIT 1",
+                (r["content_fingerprint"],),
+            ).fetchone()
+            items.append({
+                "content_fingerprint": r["content_fingerprint"],
+                "platform_count": r["platform_count"],
+                "platforms": sorted(p for p in (r["platforms"] or "").split(",") if p),
+                "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"],
+                "domain": rep["domain"] if rep else None,
+                "title": rep["title"] if rep else None,
+                "description": rep["description"] if rep else None,
+                "image_url": rep["image_url"] if rep else None,
+                "detection_method": rep["detection_method"] if rep else None,
+            })
+    return {"items": items}
+
+
 @app.get("/api/admin/status")
 def admin_status(request: Request):
     if not auth_page(request):
