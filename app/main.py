@@ -390,6 +390,14 @@ def init_db() -> None:
             if col not in utm_cols:
                 db.execute(f"ALTER TABLE creative_utm ADD COLUMN {col} {coltype}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creative_utm_mismatch ON creative_utm(landing_domain_mismatch)")
+        # Advertiser contact info (address/phone/own declared site) from their resolved
+        # Yandex/VK profile — real data (confirmed 2026-10-22: 197/1422 profiles have an
+        # address, 194/1422 a phone), genuinely useful competitive-intel for a marketer
+        # beyond just the name+ИНН already shown.
+        advertiser_cols = {row["name"] for row in db.execute("PRAGMA table_info(advertisers)").fetchall()}
+        for col in ("address", "phone", "website_url"):
+            if col not in advertiser_cols:
+                db.execute(f"ALTER TABLE advertisers ADD COLUMN {col} TEXT")
         db.commit()
 
 
@@ -690,6 +698,9 @@ class AdvertiserLinkIn(BaseModel):
     association_method: str = Field(default="unknown", max_length=80)
     confidence: float | None = None
     identifiers: list[IdentifierIn] = Field(default_factory=list, max_length=50)
+    address: str = Field(default="", max_length=1000)
+    phone: str = Field(default="", max_length=500)
+    website_url: str = Field(default="", max_length=2000)
 
 
 class AdvertiserLinksBatch(BaseModel):
@@ -1480,7 +1491,8 @@ def worker_advertiser_links(job_id: int, payload: AdvertiserLinksBatch, authoriz
             # un-truncated sync overwrites a shorter/truncated one; a shorter/empty value
             # never overwrites a longer one already stored.
             db.execute(
-                "INSERT INTO advertisers(identity_key,inn,canonical_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?) "
+                "INSERT INTO advertisers(identity_key,inn,canonical_name,address,phone,website_url,first_seen_at,last_seen_at) "
+                "VALUES(?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(identity_key) DO UPDATE SET "
                 "inn=COALESCE(advertisers.inn,excluded.inn),"
                 "canonical_name=CASE "
@@ -1488,8 +1500,12 @@ def worker_advertiser_links(job_id: int, payload: AdvertiserLinksBatch, authoriz
                 "WHEN COALESCE(advertisers.canonical_name,'')='' THEN excluded.canonical_name "
                 "WHEN LENGTH(excluded.canonical_name)>LENGTH(advertisers.canonical_name) THEN excluded.canonical_name "
                 "ELSE advertisers.canonical_name END,"
+                "address=COALESCE(NULLIF(advertisers.address,''),excluded.address),"
+                "phone=COALESCE(NULLIF(advertisers.phone,''),excluded.phone),"
+                "website_url=COALESCE(NULLIF(advertisers.website_url,''),excluded.website_url),"
                 "last_seen_at=excluded.last_seen_at",
-                (link.advertiser_identity_key, inn, link.advertiser_name or None, now, now),
+                (link.advertiser_identity_key, inn, link.advertiser_name or None,
+                 link.address or None, link.phone or None, link.website_url or None, now, now),
             )
             advertiser = db.execute(
                 "SELECT id FROM advertisers WHERE identity_key=?", (link.advertiser_identity_key,)
@@ -1777,13 +1793,14 @@ def api_list_advertisers(q: str = "", limit: int = 25, offset: int = 0, principa
             params = [f"%{q}%", f"%{q}%"]
         total = db.execute(f"SELECT COUNT(*) FROM advertisers a {where}", params).fetchone()[0]
         rows = db.execute(
-            f"SELECT a.id,a.inn,a.canonical_name,a.first_seen_at,a.last_seen_at,"
+            f"SELECT a.id,a.inn,a.canonical_name,a.address,a.phone,a.website_url,a.first_seen_at,a.last_seen_at,"
             f"(SELECT COUNT(*) FROM creative_advertiser_links l WHERE l.advertiser_id=a.id) AS creatives_count "
             f"FROM advertisers a {where} ORDER BY a.last_seen_at DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
         items = [
             {"id": r["id"], "inn": r["inn"], "name": r["canonical_name"], "creatives_count": r["creatives_count"],
+             "address": r["address"], "phone": r["phone"], "website_url": r["website_url"],
              "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"]}
             for r in rows
         ]
@@ -1945,7 +1962,8 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
         if not row:
             raise HTTPException(status_code=404, detail="Креатив не найден")
         advertisers = db.execute(
-            "SELECT a.inn,a.canonical_name,l.association_method,l.confidence FROM creative_advertiser_links l "
+            "SELECT a.inn,a.canonical_name,a.address,a.phone,a.website_url,l.association_method,l.confidence "
+            "FROM creative_advertiser_links l "
             "JOIN advertisers a ON a.id=l.advertiser_id WHERE l.creative_id=?",
             (creative_id,),
         ).fetchall()

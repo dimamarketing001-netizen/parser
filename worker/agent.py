@@ -280,12 +280,22 @@ class Worker:
             try:
                 for chunk in _chunked(hashes, 200):
                     placeholders = ",".join(["%s"] * len(chunk))
+                    # LEFT JOINs pull contact info (address/phone/site) from whichever of this
+                    # entity's resolved profiles has it (an entity can have >1 profile across
+                    # providers/tokens) — MAX() picks any one non-null value per entity, same
+                    # idea as the existing best-confidence pick for the link itself just below.
                     cursor.execute(
                         f"SELECT l.source_creative_hash, l.content_fingerprint, l.association_method, l.confidence, "
-                        f"e.identity_key, e.tax_id, e.canonical_name "
+                        f"e.identity_key, e.tax_id, e.canonical_name, "
+                        f"MAX(p.address) AS address, MAX(p.phone) AS phone, "
+                        f"MAX(p.advertised_site_url) AS advertised_site_url "
                         f"FROM parsya_advertiser_creative_links l "
                         f"JOIN parsya_advertiser_entities e ON e.entity_id = l.entity_id "
-                        f"WHERE l.source_creative_hash IN ({placeholders})",
+                        f"LEFT JOIN parsya_advertiser_profile_entities pe ON pe.entity_id = e.entity_id "
+                        f"LEFT JOIN parsya_advertiser_profiles p ON p.profile_id = pe.profile_id "
+                        f"WHERE l.source_creative_hash IN ({placeholders}) "
+                        f"GROUP BY l.source_creative_hash, l.content_fingerprint, l.association_method, "
+                        f"l.confidence, e.identity_key, e.tax_id, e.canonical_name",
                         chunk,
                     )
                     for row in cursor.fetchall():
@@ -311,6 +321,9 @@ class Worker:
                 "advertiser_name": str(row.get("canonical_name") or ""),
                 "association_method": str(row.get("association_method") or "unknown")[:80],
                 "confidence": float(row["confidence"]) if row.get("confidence") is not None else None,
+                "address": str(row.get("address") or ""),
+                "phone": str(row.get("phone") or ""),
+                "website_url": str(row.get("advertised_site_url") or ""),
             })
 
         sent = 0
