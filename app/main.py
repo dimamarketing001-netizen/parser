@@ -377,6 +377,19 @@ def init_db() -> None:
         if "owner_user_id" not in job_cols:
             db.execute("ALTER TABLE jobs ADD COLUMN owner_user_id INTEGER REFERENCES users(id)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_jobs_owner ON jobs(owner_user_id)")
+        # landing_domain_mismatch (2026-10-22): the advertiser's OWN declared site domain
+        # (from the resolved Yandex/VK advertiser profile) vs. the domain the ad actually
+        # lands on — a real divergence signal (e.g. renting someone else's landing page, an
+        # affiliate funnel, or just an app-install ad landing on apps.apple.com instead of a
+        # website). Mirrors MySQL's parsya_creative_full view, which already computes this;
+        # queued since 2026-10-18 as "always 0 in practice" back then — confirmed now showing
+        # 118 real mismatches out of ~3950 rows, worth exposing. See
+        # worker/agent.py's _sync_landing_mismatch.
+        utm_cols = {row["name"] for row in db.execute("PRAGMA table_info(creative_utm)").fetchall()}
+        for col, coltype in (("advertised_site_domain", "TEXT"), ("landing_domain_mismatch", "INTEGER")):
+            if col not in utm_cols:
+                db.execute(f"ALTER TABLE creative_utm ADD COLUMN {col} {coltype}")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creative_utm_mismatch ON creative_utm(landing_domain_mismatch)")
         db.commit()
 
 
@@ -629,6 +642,16 @@ class DestinationHistoryIn(BaseModel):
 
 class DestinationHistoryBatch(BaseModel):
     items: list[DestinationHistoryIn] = Field(max_length=400)
+
+
+class LandingMismatchIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    advertised_site_domain: str = Field(default="", max_length=253)
+    landing_domain_mismatch: bool = False
+
+
+class LandingMismatchBatch(BaseModel):
+    items: list[LandingMismatchIn] = Field(max_length=200)
 
 
 class IdentifierIn(BaseModel):
@@ -1332,6 +1355,35 @@ def worker_destination_history(job_id: int, payload: DestinationHistoryBatch, au
     return {"ok": True, "accepted": accepted}
 
 
+@app.post("/api/worker/jobs/{job_id}/landing-mismatch")
+def worker_landing_mismatch(job_id: int, payload: LandingMismatchBatch, authorization: str | None = Header(default=None)):
+    """advertised_site_domain (from the advertiser's own resolved profile) vs. the domain
+    the ad actually lands on — mirrors MySQL's parsya_creative_full.landing_domain_mismatch.
+    Only UPDATEs an existing creative_utm row (written by the main UTM sync); a creative
+    with no UTM/destination data yet has nothing meaningful to compare against."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for item in payload.items:
+            creative_hash = item.creative_hash.strip()
+            if not creative_hash:
+                continue
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            if not row:
+                continue
+            result = db.execute(
+                "UPDATE creative_utm SET advertised_site_domain=?, landing_domain_mismatch=? WHERE creative_id=?",
+                (item.advertised_site_domain, 1 if item.landing_domain_mismatch else 0, row["id"]),
+            )
+            if result.rowcount:
+                accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
 @app.post("/api/worker/jobs/{job_id}/identifiers")
 def worker_creative_identifiers(job_id: int, payload: CreativeIdentifiersBatch, authorization: str | None = Header(default=None)):
     """campaign_id/banner_id/client_id/creative_id candidates (markup-derived), for ANY
@@ -1912,7 +1964,8 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
         ).fetchall()
         utm_row = db.execute(
             "SELECT final_url,final_url_domain,utm_source,utm_medium,utm_campaign,utm_content,"
-            "utm_term,resolve_status,resolved_at FROM creative_utm WHERE creative_id=?",
+            "utm_term,resolve_status,resolved_at,advertised_site_domain,landing_domain_mismatch "
+            "FROM creative_utm WHERE creative_id=?",
             (creative_id,),
         ).fetchone()
         destination_history = db.execute(
@@ -2287,6 +2340,29 @@ def api_fastest_growing(principal: dict = Depends(public_api_principal)):
             for r in rows
         ]
     return {"items": items}
+
+
+@app.get("/api/v1/analytics/landing-mismatch")
+def api_landing_mismatch(principal: dict = Depends(public_api_principal)):
+    """Creatives where the advertiser's OWN declared site domain (from their resolved
+    Yandex/VK profile) differs from the domain the ad actually lands on — mirrors MySQL's
+    parsya_creative_full.landing_domain_mismatch. Confirmed on real data (2026-10-22): 118
+    real mismatches out of ~3950 rows. Caveat worth knowing: some of these are benign
+    (www./subdomain variants of the same site, or an app-install ad landing on
+    apps.apple.com instead of a website) rather than something suspicious — this surfaces
+    candidates to look at, it doesn't itself judge severity."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT c.id, c.domain, c.title, c.platform, c.image_url,
+                   u.final_url_domain, u.advertised_site_domain
+            FROM creative_utm u JOIN creatives c ON c.id = u.creative_id
+            WHERE u.landing_domain_mismatch = 1
+            ORDER BY c.captured_at DESC LIMIT 100
+            """
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 @app.get("/api/admin/status")

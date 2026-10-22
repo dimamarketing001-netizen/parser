@@ -231,6 +231,7 @@ class Worker:
             sent_identifiers = self._sync_creative_identifiers(connection, job_id, synced_creative_hashes)
             sent_coverage = self._sync_coverage_report(connection, job_id)
             sent_history = self._sync_destination_history(connection, job_id, synced_creative_hashes)
+            sent_mismatch = self._sync_landing_mismatch(connection, job_id, synced_creative_hashes)
 
             summary["site_results_synced"] = sent_sites
             summary["creative_occurrences_synced"] = sent_creatives
@@ -241,13 +242,14 @@ class Worker:
             summary["identifiers_synced"] = sent_identifiers
             summary["coverage_report_synced"] = sent_coverage
             summary["destination_history_synced"] = sent_history
+            summary["landing_mismatch_synced"] = sent_mismatch
             self.post_log(
                 job_id,
                 f"\n[worker] MySQL run_id={run_id}: площадок отправлено={sent_sites}, обнаружений отправлено={sent_creatives}, "
                 f"связей рекламодателя отправлено={sent_links}, доп.сигналов отправлено={sent_extras}, "
                 f"доп.ссылок отправлено={sent_secondary}, UTM отправлено={sent_utm}, "
                 f"идентификаторов отправлено={sent_identifiers}, строк coverage-report отправлено={sent_coverage}, "
-                f"истории кампаний отправлено={sent_history}.\n",
+                f"истории кампаний отправлено={sent_history}, несовпадений домена отправлено={sent_mismatch}.\n",
             )
         except Exception as exc:
             self.post_log(job_id, f"\n[worker] Ошибка синхронизации MySQL: {type(exc).__name__}: {exc}\n")
@@ -577,6 +579,52 @@ class Worker:
                 sent += int(result.get("accepted", 0))
             except Exception as exc:
                 self.post_log(job_id, f"\n[worker] Ошибка отправки destination-history: {type(exc).__name__}: {exc}\n")
+        return sent
+
+    def _sync_landing_mismatch(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies landing_domain_mismatch (advertiser's own declared site domain vs. where
+        the ad actually lands) from MySQL's parsya_creative_full VIEW, which already
+        computes it. Queued 2026-10-18 as "always 0 in practice back then" — now showing
+        118 real mismatches out of ~3950 rows, worth exposing."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        items: list[dict[str, Any]] = []
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT creative_hash, advertised_site_domain, landing_domain_mismatch "
+                        f"FROM parsya_creative_full WHERE creative_hash IN ({placeholders}) "
+                        f"AND advertised_site_domain IS NOT NULL",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("creative_hash") or ""
+                        if not h:
+                            continue
+                        items.append({
+                            "creative_hash": h,
+                            "advertised_site_domain": str(row.get("advertised_site_domain") or ""),
+                            "landing_domain_mismatch": bool(row.get("landing_domain_mismatch")),
+                        })
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения landing-mismatch из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        sent = 0
+        for chunk in _chunked(items, 100):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/landing-mismatch", json={"items": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки landing-mismatch: {type(exc).__name__}: {exc}\n")
         return sent
 
     def _sync_creative_identifiers(self, connection: Any, job_id: int, creative_hashes: set) -> int:
