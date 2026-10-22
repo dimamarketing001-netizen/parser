@@ -225,14 +225,26 @@ class Worker:
             cursor.close()
 
             sent_links = self._sync_advertiser_links(connection, job_id, synced_creative_hashes)
+            sent_extras = self._sync_creative_extras(connection, job_id, synced_creative_hashes)
+            sent_secondary = self._sync_secondary_links(connection, job_id, synced_creative_hashes)
+            sent_utm = self._sync_creative_utm(connection, job_id, synced_creative_hashes)
+            sent_identifiers = self._sync_creative_identifiers(connection, job_id, synced_creative_hashes)
+            sent_coverage = self._sync_coverage_report(connection, job_id)
 
             summary["site_results_synced"] = sent_sites
             summary["creative_occurrences_synced"] = sent_creatives
             summary["advertiser_links_synced"] = sent_links
+            summary["creative_extras_synced"] = sent_extras
+            summary["secondary_links_synced"] = sent_secondary
+            summary["utm_synced"] = sent_utm
+            summary["identifiers_synced"] = sent_identifiers
+            summary["coverage_report_synced"] = sent_coverage
             self.post_log(
                 job_id,
                 f"\n[worker] MySQL run_id={run_id}: площадок отправлено={sent_sites}, обнаружений отправлено={sent_creatives}, "
-                f"связей рекламодателя отправлено={sent_links}.\n",
+                f"связей рекламодателя отправлено={sent_links}, доп.сигналов отправлено={sent_extras}, "
+                f"доп.ссылок отправлено={sent_secondary}, UTM отправлено={sent_utm}, "
+                f"идентификаторов отправлено={sent_identifiers}, строк coverage-report отправлено={sent_coverage}.\n",
             )
         except Exception as exc:
             self.post_log(job_id, f"\n[worker] Ошибка синхронизации MySQL: {type(exc).__name__}: {exc}\n")
@@ -245,10 +257,15 @@ class Worker:
         return summary
 
     def _sync_advertiser_links(self, connection: Any, job_id: int, creative_hashes: set) -> int:
-        """Copies ИНН/advertiser identity + campaign/banner/client IDs for creatives already
-        uploaded in this run, from ParsYa's advertiser-enrichment tables (parsya_advertiser_*,
-        parsya_ad_creative_identifier_snapshots). Scoped to this run's creative hashes only, so
-        a run never re-sends the whole history of every past advertiser link."""
+        """Copies ИНН/advertiser identity for creatives already uploaded in this run, from
+        ParsYa's advertiser-enrichment tables (parsya_advertiser_*). Scoped to this run's
+        creative hashes only, so a run never re-sends the whole history of every past link.
+
+        campaign_id/banner_id/client_id candidates used to be synced HERE, nested inside this
+        same query, gated on `if links_by_hash:` — meaning they were silently dropped for any
+        creative without a resolved advertiser link (most creatives, historically). Moved to
+        its own independent pass, `_sync_creative_identifiers`, so identifier sync no longer
+        depends on disclosure status."""
         if not creative_hashes:
             return 0
         hashes = sorted(creative_hashes)
@@ -275,46 +292,12 @@ class Worker:
                             links_by_hash[h] = row
             finally:
                 cursor.close()
-
-            identifiers_by_hash: dict[str, dict[str, set]] = {}
-            if links_by_hash:
-                cursor = connection.cursor(dictionary=True)
-                try:
-                    for chunk in _chunked(sorted(links_by_hash.keys()), 200):
-                        placeholders = ",".join(["%s"] * len(chunk))
-                        cursor.execute(
-                            f"SELECT source_creative_hash, client_ids_json, campaign_ids_json, "
-                            f"banner_ids_json, creative_ids_json "
-                            f"FROM parsya_ad_creative_identifier_snapshots "
-                            f"WHERE source_creative_hash IN ({placeholders})",
-                            chunk,
-                        )
-                        for row in cursor.fetchall():
-                            h = row.get("source_creative_hash") or ""
-                            bucket = identifiers_by_hash.setdefault(h, {
-                                "client_id_candidate": set(), "campaign_id_candidate": set(),
-                                "banner_id_candidate": set(), "creative_id_candidate": set(),
-                            })
-                            for id_type, field in (
-                                ("client_id_candidate", "client_ids_json"),
-                                ("campaign_id_candidate", "campaign_ids_json"),
-                                ("banner_id_candidate", "banner_ids_json"),
-                                ("creative_id_candidate", "creative_ids_json"),
-                            ):
-                                try:
-                                    values = json.loads(row.get(field) or "[]")
-                                except Exception:
-                                    values = []
-                                bucket[id_type].update(str(v) for v in values if v)
-                finally:
-                    cursor.close()
         except Exception as exc:
             self.post_log(job_id, f"\n[worker] Ошибка чтения advertiser-links из MySQL: {type(exc).__name__}: {exc}\n")
             return 0
 
         link_items: list[dict[str, Any]] = []
         for h, row in links_by_hash.items():
-            ids = identifiers_by_hash.get(h, {})
             link_items.append({
                 "creative_hash": h,
                 "content_fingerprint": str(row.get("content_fingerprint") or ""),
@@ -323,10 +306,6 @@ class Worker:
                 "advertiser_name": str(row.get("canonical_name") or ""),
                 "association_method": str(row.get("association_method") or "unknown")[:80],
                 "confidence": float(row["confidence"]) if row.get("confidence") is not None else None,
-                "identifiers": [
-                    {"type": id_type, "value": value}
-                    for id_type, values in ids.items() for value in values
-                ][:50],
             })
 
         sent = 0
@@ -339,6 +318,309 @@ class Worker:
             except Exception as exc:
                 self.post_log(job_id, f"\n[worker] Ошибка отправки advertiser-links: {type(exc).__name__}: {exc}\n")
         return sent
+
+    def _sync_creative_extras(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies media format (video src/poster/duration), CTA button text, price/discount
+        and app-store ids for creatives already uploaded in this run, from ParsYa's own
+        enrichment tables (parsya_creative_media_classification, parsya_creative_attributes)."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        media_by_hash: dict[str, dict[str, Any]] = {}
+        attrs_by_hash: dict[str, dict[str, Any]] = {}
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT source_creative_hash, creative_type, video_src, video_poster, video_duration "
+                        f"FROM parsya_creative_media_classification WHERE source_creative_hash IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("source_creative_hash") or ""
+                        if h:
+                            media_by_hash[h] = row
+            finally:
+                cursor.close()
+
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT source_creative_hash, cta_text, price_text, price_rub, discount_percent, "
+                        f"erid, app_package_id, app_store_id, carousel_id, carousel_slide_index "
+                        f"FROM parsya_creative_attributes WHERE source_creative_hash IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("source_creative_hash") or ""
+                        if h:
+                            attrs_by_hash[h] = row
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения creative-extras из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        extras_items: list[dict[str, Any]] = []
+        for h in hashes:
+            media = media_by_hash.get(h, {})
+            attrs = attrs_by_hash.get(h, {})
+            if not media and not attrs:
+                continue
+            extras_items.append({
+                "creative_hash": h,
+                "creative_type": str(media.get("creative_type") or ""),
+                "video_src": str(media.get("video_src") or ""),
+                "video_poster": str(media.get("video_poster") or ""),
+                "video_duration": str(media.get("video_duration") or ""),
+                "cta_text": str(attrs.get("cta_text") or ""),
+                "price_text": str(attrs.get("price_text") or ""),
+                "price_rub": float(attrs["price_rub"]) if attrs.get("price_rub") is not None else None,
+                "discount_percent": float(attrs["discount_percent"]) if attrs.get("discount_percent") is not None else None,
+                "erid": str(attrs.get("erid") or ""),
+                "app_package_id": str(attrs.get("app_package_id") or ""),
+                "app_store_id": str(attrs.get("app_store_id") or ""),
+                "carousel_id": str(attrs.get("carousel_id") or ""),
+                "carousel_slide_index": attrs.get("carousel_slide_index"),
+            })
+
+        sent = 0
+        for chunk in _chunked(extras_items, 100):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/extras", json={"extras": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки creative-extras: {type(exc).__name__}: {exc}\n")
+        return sent
+
+    def _sync_secondary_links(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies the OTHER clickable links/buttons of each ad (sitelinks, a second CTA) —
+        each with its own UTM — from parsya_creative_secondary_links, for creatives already
+        uploaded in this run."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        link_items: list[dict[str, Any]] = []
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT source_creative_hash, link_text, tracking_url, final_url, final_url_domain, "
+                        f"utm_source, utm_medium, utm_campaign, utm_content, utm_term, resolve_status "
+                        f"FROM parsya_creative_secondary_links WHERE source_creative_hash IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        link_items.append({
+                            "creative_hash": row.get("source_creative_hash") or "",
+                            "link_text": str(row.get("link_text") or ""),
+                            "tracking_url": str(row.get("tracking_url") or ""),
+                            "final_url": str(row.get("final_url") or ""),
+                            "final_url_domain": str(row.get("final_url_domain") or ""),
+                            "utm_source": str(row.get("utm_source") or ""),
+                            "utm_medium": str(row.get("utm_medium") or ""),
+                            "utm_campaign": str(row.get("utm_campaign") or ""),
+                            "utm_content": str(row.get("utm_content") or ""),
+                            "utm_term": str(row.get("utm_term") or ""),
+                            "resolve_status": str(row.get("resolve_status") or ""),
+                        })
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения secondary-links из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        sent = 0
+        for chunk in _chunked(link_items, 100):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/secondary-links", json={"links": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки secondary-links: {type(exc).__name__}: {exc}\n")
+        return sent
+
+    def _sync_creative_utm(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies UTM of each creative's OWN (primary) destination_url from
+        parsya_creative_destination_urls — one row per creative, the LATEST resolve wins
+        (a creative can be re-resolved across runs as its landing page/campaign changes).
+        Independent of advertiser disclosure, unlike the old identifiers-in-advertiser-links
+        path: UTM exists whether or not AdTune ever revealed a name/ИНН for this creative."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        utm_by_hash: dict[str, dict[str, Any]] = {}
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT d1.source_creative_hash, d1.final_url, d1.final_url_domain, "
+                        f"d1.utm_source, d1.utm_medium, d1.utm_campaign, d1.utm_content, d1.utm_term, "
+                        f"d1.resolve_status, d1.resolved_at "
+                        f"FROM parsya_creative_destination_urls d1 "
+                        f"INNER JOIN ("
+                        f"  SELECT source_creative_hash, MAX(resolved_at) AS max_resolved "
+                        f"  FROM parsya_creative_destination_urls "
+                        f"  WHERE source_creative_hash IN ({placeholders}) "
+                        f"  GROUP BY source_creative_hash"
+                        f") d2 ON d1.source_creative_hash = d2.source_creative_hash "
+                        f"AND d1.resolved_at = d2.max_resolved",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("source_creative_hash") or ""
+                        if h:
+                            utm_by_hash[h] = row
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения UTM из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        utm_items: list[dict[str, Any]] = []
+        for h, row in utm_by_hash.items():
+            resolved_at = row.get("resolved_at")
+            utm_items.append({
+                "creative_hash": h,
+                "final_url": str(row.get("final_url") or ""),
+                "final_url_domain": str(row.get("final_url_domain") or ""),
+                "utm_source": str(row.get("utm_source") or ""),
+                "utm_medium": str(row.get("utm_medium") or ""),
+                "utm_campaign": str(row.get("utm_campaign") or ""),
+                "utm_content": str(row.get("utm_content") or ""),
+                "utm_term": str(row.get("utm_term") or ""),
+                "resolve_status": str(row.get("resolve_status") or ""),
+                "resolved_at": resolved_at.isoformat() if hasattr(resolved_at, "isoformat") else str(resolved_at or ""),
+            })
+
+        sent = 0
+        for chunk in _chunked(utm_items, 100):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/utm", json={"items": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки UTM: {type(exc).__name__}: {exc}\n")
+        return sent
+
+    def _sync_creative_identifiers(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies campaign_id/banner_id/client_id/creative_id candidates (markup-derived)
+        for ANY creative already uploaded in this run — independent of advertiser disclosure.
+        Was previously only synced for creatives that already had a resolved advertiser link
+        (nested inside _sync_advertiser_links), which silently dropped these for most
+        creatives historically (90%+ before the AdTune click-reveal fixes). Separated into
+        its own pass so campaign-ID filtering/analytics works regardless of disclosure status."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        identifiers_by_hash: dict[str, dict[str, set]] = {}
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT source_creative_hash, client_ids_json, campaign_ids_json, "
+                        f"banner_ids_json, creative_ids_json "
+                        f"FROM parsya_ad_creative_identifier_snapshots "
+                        f"WHERE source_creative_hash IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("source_creative_hash") or ""
+                        if not h:
+                            continue
+                        bucket = identifiers_by_hash.setdefault(h, {
+                            "client_id_candidate": set(), "campaign_id_candidate": set(),
+                            "banner_id_candidate": set(), "creative_id_candidate": set(),
+                        })
+                        for id_type, field in (
+                            ("client_id_candidate", "client_ids_json"),
+                            ("campaign_id_candidate", "campaign_ids_json"),
+                            ("banner_id_candidate", "banner_ids_json"),
+                            ("creative_id_candidate", "creative_ids_json"),
+                        ):
+                            try:
+                                values = json.loads(row.get(field) or "[]")
+                            except Exception:
+                                values = []
+                            bucket[id_type].update(str(v) for v in values if v)
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения identifiers из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        identifier_items: list[dict[str, Any]] = []
+        for h, ids in identifiers_by_hash.items():
+            identifiers = [
+                {"type": id_type, "value": value}
+                for id_type, values in ids.items() for value in values
+            ][:50]
+            if identifiers:
+                identifier_items.append({"creative_hash": h, "identifiers": identifiers})
+
+        sent = 0
+        for chunk in _chunked(identifier_items, 100):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/identifiers", json={"items": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки identifiers: {type(exc).__name__}: {exc}\n")
+        return sent
+
+    def _sync_coverage_report(self, connection: Any, job_id: int) -> int:
+        """Copies parsya_advertiser_coverage_report (a MySQL VIEW: % disclosed grouped by
+        platform/detection_method/creative_type) into SQLite — a global aggregate, not scoped
+        to this job's creatives, so this fully replaces the small table each time rather than
+        growing it. Cheap to run on every sync; the view itself does the heavy aggregation."""
+        rows_out: list[dict[str, Any]] = []
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                cursor.execute(
+                    "SELECT platform, detection_method, creative_type, total_creatives, "
+                    "creatives_with_inn, coverage_percent FROM parsya_advertiser_coverage_report"
+                )
+                for row in cursor.fetchall():
+                    rows_out.append({
+                        "platform": str(row.get("platform") or ""),
+                        "detection_method": str(row.get("detection_method") or ""),
+                        "creative_type": str(row.get("creative_type") or ""),
+                        "total_creatives": int(row.get("total_creatives") or 0),
+                        "disclosed_creatives": int(row.get("creatives_with_inn") or 0),
+                        "disclosed_pct": float(row.get("coverage_percent") or 0),
+                    })
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения coverage-report из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        if not rows_out:
+            return 0
+        try:
+            result = self.request(
+                "POST", "/api/worker/coverage-report", json={"rows": rows_out}
+            ).json()
+            return int(result.get("accepted", 0))
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка отправки coverage-report: {type(exc).__name__}: {exc}\n")
+            return 0
 
     def execute_job(self, job: dict[str, Any]) -> None:
         job_id = int(job["id"])

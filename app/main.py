@@ -160,6 +160,62 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_site_results_job ON site_results(job_id);
         CREATE INDEX IF NOT EXISTS ix_site_results_status ON site_results(status);
+        -- Other clickable links/buttons of an ad (sitelinks, a second CTA) beyond the one
+        -- "main" destination_url already on `creatives` — each with its own UTM, synced
+        -- from ParsYa's parsya_creative_secondary_links (worker/agent.py's _sync_secondary_links).
+        CREATE TABLE IF NOT EXISTS creative_secondary_links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          creative_id INTEGER NOT NULL,
+          link_text TEXT,
+          tracking_url TEXT,
+          final_url TEXT,
+          final_url_domain TEXT,
+          utm_source TEXT,
+          utm_medium TEXT,
+          utm_campaign TEXT,
+          utm_content TEXT,
+          utm_term TEXT,
+          resolve_status TEXT,
+          UNIQUE(creative_id, tracking_url),
+          FOREIGN KEY(creative_id) REFERENCES creatives(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_secondary_links_creative ON creative_secondary_links(creative_id);
+
+        -- UTM of the creative's OWN (primary) destination_url — distinct from
+        -- creative_secondary_links above (those are OTHER clickable links of the same ad).
+        -- Synced from ParsYa's parsya_creative_destination_urls (worker/agent.py's
+        -- _sync_creative_utm), one row per creative (latest resolve wins), independent of
+        -- advertiser disclosure — UTM exists whether or not AdTune ever revealed a name/ИНН.
+        CREATE TABLE IF NOT EXISTS creative_utm (
+          creative_id INTEGER PRIMARY KEY,
+          final_url TEXT,
+          final_url_domain TEXT,
+          utm_source TEXT,
+          utm_medium TEXT,
+          utm_campaign TEXT,
+          utm_content TEXT,
+          utm_term TEXT,
+          resolve_status TEXT,
+          resolved_at TEXT,
+          FOREIGN KEY(creative_id) REFERENCES creatives(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_creative_utm_campaign ON creative_utm(utm_campaign);
+        CREATE INDEX IF NOT EXISTS ix_creative_utm_term ON creative_utm(utm_term);
+
+        -- Advertiser-disclosure coverage %, grouped by platform/detection_method/creative_type.
+        -- Mirrors MySQL's parsya_advertiser_coverage_report VIEW (global aggregate, not
+        -- scoped to one job/run) — fully replaced on every sync, not accumulated.
+        CREATE TABLE IF NOT EXISTS advertiser_coverage_report (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          platform TEXT,
+          detection_method TEXT,
+          creative_type TEXT,
+          total_creatives INTEGER NOT NULL DEFAULT 0,
+          disclosed_creatives INTEGER NOT NULL DEFAULT 0,
+          disclosed_pct REAL NOT NULL DEFAULT 0,
+          synced_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_coverage_platform ON advertiser_coverage_report(platform);
 
         -- Live remote-captcha-solving channel: the parser subprocess posts a screenshot
         -- here roughly once a second while a CAPTCHA blocks it, an admin viewing the run
@@ -276,6 +332,19 @@ def init_db() -> None:
         if "content_fingerprint" not in existing_cols:
             db.execute("ALTER TABLE creatives ADD COLUMN content_fingerprint TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_fingerprint ON creatives(content_fingerprint)")
+        # Extra per-creative signals (media format, CTA button, price/discount, app-store ids)
+        # synced from ParsYa's own enrichment tables — see worker/agent.py's
+        # _sync_creative_extras. None of this existed when the table was first created.
+        for col, coltype in (
+            ("creative_type", "TEXT"), ("video_src", "TEXT"), ("video_poster", "TEXT"),
+            ("video_duration", "TEXT"), ("cta_text", "TEXT"), ("price_text", "TEXT"),
+            ("price_rub", "REAL"), ("discount_percent", "REAL"), ("erid", "TEXT"),
+            ("app_package_id", "TEXT"), ("app_store_id", "TEXT"),
+            ("carousel_id", "TEXT"), ("carousel_slide_index", "INTEGER"),
+        ):
+            if col not in existing_cols:
+                db.execute(f"ALTER TABLE creatives ADD COLUMN {col} {coltype}")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_carousel ON creatives(carousel_id)")
         # owner_user_id lets a SaaS user (see `users`) self-serve: launch their own runs from
         # the frontend and only ever see their own jobs. NULL means an ops-console run created
         # from the admin HTML pages, not tied to any SaaS account.
@@ -462,9 +531,87 @@ class CreativesBatch(BaseModel):
     creatives: list[CreativeIn] = Field(max_length=20)
 
 
+class CreativeExtrasIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    creative_type: str = Field(default="", max_length=16)
+    video_src: str = Field(default="", max_length=2000)
+    video_poster: str = Field(default="", max_length=2000)
+    video_duration: str = Field(default="", max_length=32)
+    cta_text: str = Field(default="", max_length=120)
+    price_text: str = Field(default="", max_length=255)
+    price_rub: float | None = None
+    discount_percent: float | None = None
+    erid: str = Field(default="", max_length=64)
+    app_package_id: str = Field(default="", max_length=255)
+    app_store_id: str = Field(default="", max_length=64)
+    carousel_id: str = Field(default="", max_length=32)
+    carousel_slide_index: int | None = None
+
+
+class CreativeExtrasBatch(BaseModel):
+    extras: list[CreativeExtrasIn] = Field(max_length=200)
+
+
+class SecondaryLinkIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    link_text: str = Field(default="", max_length=300)
+    tracking_url: str = Field(default="", max_length=4000)
+    final_url: str = Field(default="", max_length=4000)
+    final_url_domain: str = Field(default="", max_length=253)
+    utm_source: str = Field(default="", max_length=255)
+    utm_medium: str = Field(default="", max_length=255)
+    utm_campaign: str = Field(default="", max_length=500)
+    utm_content: str = Field(default="", max_length=500)
+    utm_term: str = Field(default="", max_length=500)
+    resolve_status: str = Field(default="", max_length=32)
+
+
+class SecondaryLinksBatch(BaseModel):
+    links: list[SecondaryLinkIn] = Field(max_length=400)
+
+
+class CreativeUtmIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    final_url: str = Field(default="", max_length=4000)
+    final_url_domain: str = Field(default="", max_length=253)
+    utm_source: str = Field(default="", max_length=255)
+    utm_medium: str = Field(default="", max_length=255)
+    utm_campaign: str = Field(default="", max_length=500)
+    utm_content: str = Field(default="", max_length=500)
+    utm_term: str = Field(default="", max_length=500)
+    resolve_status: str = Field(default="", max_length=32)
+    resolved_at: str = Field(default="", max_length=64)
+
+
+class CreativeUtmBatch(BaseModel):
+    items: list[CreativeUtmIn] = Field(max_length=200)
+
+
 class IdentifierIn(BaseModel):
     type: str = Field(min_length=1, max_length=64)
     value: str = Field(min_length=1, max_length=500)
+
+
+class CreativeIdentifiersIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    identifiers: list[IdentifierIn] = Field(default_factory=list, max_length=50)
+
+
+class CreativeIdentifiersBatch(BaseModel):
+    items: list[CreativeIdentifiersIn] = Field(max_length=200)
+
+
+class CoverageReportRowIn(BaseModel):
+    platform: str = Field(default="", max_length=255)
+    detection_method: str = Field(default="", max_length=128)
+    creative_type: str = Field(default="", max_length=64)
+    total_creatives: int = 0
+    disclosed_creatives: int = 0
+    disclosed_pct: float = 0
+
+
+class CoverageReportBatch(BaseModel):
+    rows: list[CoverageReportRowIn] = Field(max_length=2000)
 
 
 class AdvertiserLinkIn(BaseModel):
@@ -986,6 +1133,186 @@ def worker_creatives(job_id: int, payload: CreativesBatch, authorization: str | 
     return {"ok": True, "accepted": accepted, "new_creatives": new_count}
 
 
+@app.post("/api/worker/jobs/{job_id}/extras")
+def worker_creative_extras(job_id: int, payload: CreativeExtrasBatch, authorization: str | None = Header(default=None)):
+    """Media format (video src/poster/duration), CTA button text, price/discount and
+    app-store ids — synced separately from the base creative row since they come from
+    ParsYa's own enrichment tables (parsya_creative_media_classification/_attributes),
+    not from the scraper's core detection loop. Only fills currently-empty fields, same
+    rule as worker_creatives, so a later run never overwrites a value with a blank."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for item in payload.extras:
+            creative_hash = item.creative_hash.strip()
+            if not creative_hash:
+                continue
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            if not row:
+                continue
+            db.execute(
+                "UPDATE creatives SET "
+                "creative_type=CASE WHEN COALESCE(creative_type,'')='' THEN ? ELSE creative_type END,"
+                "video_src=CASE WHEN COALESCE(video_src,'')='' THEN ? ELSE video_src END,"
+                "video_poster=CASE WHEN COALESCE(video_poster,'')='' THEN ? ELSE video_poster END,"
+                "video_duration=CASE WHEN COALESCE(video_duration,'')='' THEN ? ELSE video_duration END,"
+                "cta_text=CASE WHEN COALESCE(cta_text,'')='' THEN ? ELSE cta_text END,"
+                "price_text=CASE WHEN COALESCE(price_text,'')='' THEN ? ELSE price_text END,"
+                "price_rub=CASE WHEN price_rub IS NULL THEN ? ELSE price_rub END,"
+                "discount_percent=CASE WHEN discount_percent IS NULL THEN ? ELSE discount_percent END,"
+                "erid=CASE WHEN COALESCE(erid,'')='' THEN ? ELSE erid END,"
+                "app_package_id=CASE WHEN COALESCE(app_package_id,'')='' THEN ? ELSE app_package_id END,"
+                "app_store_id=CASE WHEN COALESCE(app_store_id,'')='' THEN ? ELSE app_store_id END,"
+                "carousel_id=CASE WHEN COALESCE(carousel_id,'')='' THEN ? ELSE carousel_id END,"
+                "carousel_slide_index=CASE WHEN carousel_slide_index IS NULL THEN ? ELSE carousel_slide_index END "
+                "WHERE creative_hash=?",
+                (item.creative_type, item.video_src, item.video_poster, item.video_duration,
+                 item.cta_text, item.price_text, item.price_rub, item.discount_percent,
+                 item.erid, item.app_package_id, item.app_store_id,
+                 item.carousel_id, item.carousel_slide_index, creative_hash),
+            )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
+@app.post("/api/worker/jobs/{job_id}/secondary-links")
+def worker_secondary_links(job_id: int, payload: SecondaryLinksBatch, authorization: str | None = Header(default=None)):
+    """Other clickable links/buttons of an ad (sitelinks, a second CTA) beyond the one
+    main destination_url — each with its own UTM. Upserts by (creative_id, tracking_url)
+    so a re-sync of the same job just refreshes resolved UTM fields in place."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for item in payload.links:
+            creative_hash = item.creative_hash.strip()
+            tracking_url = item.tracking_url.strip()
+            if not creative_hash or not tracking_url:
+                continue
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            if not row:
+                continue
+            db.execute(
+                "INSERT INTO creative_secondary_links"
+                "(creative_id,link_text,tracking_url,final_url,final_url_domain,"
+                " utm_source,utm_medium,utm_campaign,utm_content,utm_term,resolve_status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(creative_id,tracking_url) DO UPDATE SET "
+                "link_text=excluded.link_text, final_url=excluded.final_url, "
+                "final_url_domain=excluded.final_url_domain, utm_source=excluded.utm_source, "
+                "utm_medium=excluded.utm_medium, utm_campaign=excluded.utm_campaign, "
+                "utm_content=excluded.utm_content, utm_term=excluded.utm_term, "
+                "resolve_status=excluded.resolve_status",
+                (row["id"], item.link_text, tracking_url, item.final_url, item.final_url_domain,
+                 item.utm_source, item.utm_medium, item.utm_campaign, item.utm_content, item.utm_term,
+                 item.resolve_status),
+            )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
+@app.post("/api/worker/jobs/{job_id}/utm")
+def worker_creative_utm(job_id: int, payload: CreativeUtmBatch, authorization: str | None = Header(default=None)):
+    """UTM of the creative's OWN (primary) destination_url — one row per creative, latest
+    resolve wins. Independent of advertiser disclosure: a creative with no revealed name/ИНН
+    still has real UTM data worth filtering/reporting on."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for item in payload.items:
+            creative_hash = item.creative_hash.strip()
+            if not creative_hash:
+                continue
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            if not row:
+                continue
+            db.execute(
+                "INSERT INTO creative_utm"
+                "(creative_id,final_url,final_url_domain,utm_source,utm_medium,utm_campaign,"
+                " utm_content,utm_term,resolve_status,resolved_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(creative_id) DO UPDATE SET "
+                "final_url=excluded.final_url, final_url_domain=excluded.final_url_domain, "
+                "utm_source=excluded.utm_source, utm_medium=excluded.utm_medium, "
+                "utm_campaign=excluded.utm_campaign, utm_content=excluded.utm_content, "
+                "utm_term=excluded.utm_term, resolve_status=excluded.resolve_status, "
+                "resolved_at=excluded.resolved_at",
+                (row["id"], item.final_url, item.final_url_domain, item.utm_source, item.utm_medium,
+                 item.utm_campaign, item.utm_content, item.utm_term, item.resolve_status, item.resolved_at),
+            )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
+@app.post("/api/worker/jobs/{job_id}/identifiers")
+def worker_creative_identifiers(job_id: int, payload: CreativeIdentifiersBatch, authorization: str | None = Header(default=None)):
+    """campaign_id/banner_id/client_id/creative_id candidates (markup-derived), for ANY
+    creative already uploaded in this run — independent of advertiser disclosure. Separated
+    from /advertiser-links on purpose: the old path only synced identifiers for creatives
+    that already had a resolved advertiser link, silently dropping them for everything else
+    (most creatives, historically)."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        now = now_iso()
+        for item in payload.items:
+            creative_hash = item.creative_hash.strip()
+            if not creative_hash:
+                continue
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            if not row:
+                continue
+            creative_id = int(row["id"])
+            for ident in item.identifiers:
+                id_type = ident.type.strip()[:64]
+                id_value = ident.value.strip()[:500]
+                if not id_type or not id_value:
+                    continue
+                db.execute(
+                    "INSERT INTO creative_identifiers(creative_id,identifier_type,identifier_value,first_seen_at,last_seen_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(creative_id,identifier_type,identifier_value) DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                    (creative_id, id_type, id_value, now, now),
+                )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
+@app.post("/api/worker/coverage-report")
+def worker_coverage_report(payload: CoverageReportBatch, authorization: str | None = Header(default=None)):
+    """Advertiser-disclosure coverage %, grouped by platform/detection_method/creative_type —
+    mirrors MySQL's parsya_advertiser_coverage_report VIEW. A global aggregate, not scoped to
+    one job: each sync fully REPLACES the table rather than accumulating rows."""
+    worker_auth(authorization)
+    now = now_iso()
+    with closing(connect()) as db:
+        db.execute("DELETE FROM advertiser_coverage_report")
+        for row in payload.rows:
+            db.execute(
+                "INSERT INTO advertiser_coverage_report"
+                "(platform,detection_method,creative_type,total_creatives,disclosed_creatives,disclosed_pct,synced_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (row.platform, row.detection_method, row.creative_type,
+                 row.total_creatives, row.disclosed_creatives, row.disclosed_pct, now),
+            )
+        db.commit()
+    return {"ok": True, "accepted": len(payload.rows)}
+
+
 @app.post("/api/worker/jobs/{job_id}/advertiser-links")
 def worker_advertiser_links(job_id: int, payload: AdvertiserLinksBatch, authorization: str | None = Header(default=None)):
     """Accepts advertiser (ИНН) identity links for creatives already uploaded in this job.
@@ -1226,6 +1553,19 @@ def _creative_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "detection_method": row["detection_method"],
         "recognition_status": row["recognition_status"],
         "captured_at": row["captured_at"],
+        "creative_type": row["creative_type"],
+        "video_src": row["video_src"],
+        "video_poster": row["video_poster"],
+        "video_duration": row["video_duration"],
+        "cta_text": row["cta_text"],
+        "price_text": row["price_text"],
+        "price_rub": row["price_rub"],
+        "discount_percent": row["discount_percent"],
+        "erid": row["erid"],
+        "app_package_id": row["app_package_id"],
+        "app_store_id": row["app_store_id"],
+        "carousel_id": row["carousel_id"],
+        "carousel_slide_index": row["carousel_slide_index"],
     }
 
 
@@ -1320,7 +1660,9 @@ def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0, princip
 @app.get("/api/v1/creatives")
 def api_list_creatives(
     inn: str = "", platform: str = "", q: str = "", status: str = "", job_id: int | None = None,
-    has_advertiser: bool | None = None, date_from: str = "", date_to: str = "",
+    has_advertiser: bool | None = None, has_app: bool | None = None, has_discount: bool | None = None,
+    campaign_id: str = "", utm_campaign: str = "", keyword: str = "",
+    date_from: str = "", date_to: str = "",
     sort: str = "recent", limit: int = 50, offset: int = 0,
     principal: dict = Depends(public_api_principal),
 ):
@@ -1336,6 +1678,25 @@ def api_list_creatives(
         elif has_advertiser is not None:
             exists_sql = "EXISTS (SELECT 1 FROM creative_advertiser_links cal WHERE cal.creative_id=c.id)"
             where_parts.append(exists_sql if has_advertiser else f"NOT {exists_sql}")
+        if has_app:
+            where_parts.append("(COALESCE(c.app_package_id,'')<>'' OR COALESCE(c.app_store_id,'')<>'')")
+        if has_discount:
+            where_parts.append("c.discount_percent IS NOT NULL")
+        if campaign_id:
+            joins.append(
+                "JOIN creative_identifiers ci_campaign ON ci_campaign.creative_id=c.id "
+                "AND ci_campaign.identifier_type='campaign_id_candidate'"
+            )
+            where_parts.append("ci_campaign.identifier_value=?")
+            params.append(campaign_id)
+        if utm_campaign:
+            joins.append("JOIN creative_utm cu_campaign ON cu_campaign.creative_id=c.id")
+            where_parts.append("cu_campaign.utm_campaign=?")
+            params.append(utm_campaign)
+        if keyword:
+            joins.append("JOIN creative_utm cu_keyword ON cu_keyword.creative_id=c.id")
+            where_parts.append("cu_keyword.utm_term=?")
+            params.append(keyword)
         if job_id is not None:
             joins.append("JOIN occurrences jo ON jo.creative_id=c.id")
             where_parts.append("jo.job_id=?")
@@ -1361,6 +1722,7 @@ def api_list_creatives(
             "recent": "c.captured_at DESC",
             "oldest": "c.captured_at ASC",
             "domain": "c.domain ASC, c.captured_at DESC",
+            "discount": "c.discount_percent DESC, c.captured_at DESC",
         }.get(sort, "c.captured_at DESC")
         total = db.execute(f"SELECT COUNT(DISTINCT c.id) FROM creatives c {join_sql} {where}", params).fetchone()[0]
         rows = db.execute(
@@ -1397,11 +1759,23 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
             "SELECT job_id,platform,source_page_url,observed_at FROM occurrences WHERE creative_id=? ORDER BY observed_at DESC LIMIT 100",
             (creative_id,),
         ).fetchall()
+        secondary_links = db.execute(
+            "SELECT link_text,tracking_url,final_url,final_url_domain,utm_source,utm_medium,"
+            "utm_campaign,utm_content,utm_term,resolve_status FROM creative_secondary_links WHERE creative_id=?",
+            (creative_id,),
+        ).fetchall()
+        utm_row = db.execute(
+            "SELECT final_url,final_url_domain,utm_source,utm_medium,utm_campaign,utm_content,"
+            "utm_term,resolve_status,resolved_at FROM creative_utm WHERE creative_id=?",
+            (creative_id,),
+        ).fetchone()
     return {
         "creative": _creative_row_to_dict(row),
         "advertisers": [dict(r) for r in advertisers],
         "identifiers": [dict(r) for r in identifiers],
         "occurrences": [dict(r) for r in occurrences],
+        "secondary_links": [dict(r) for r in secondary_links],
+        "utm": dict(utm_row) if utm_row else None,
     }
 
 
@@ -1633,6 +2007,95 @@ def api_cross_platform_reuse(principal: dict = Depends(public_api_principal)):
                 "detection_method": rep["detection_method"] if rep else None,
             })
     return {"items": items}
+
+
+@app.get("/api/v1/analytics/carousels")
+def api_carousels(principal: dict = Depends(public_api_principal)):
+    """Creatives sharing a carousel_id were shown side-by-side in the same scrolling ad
+    carousel (sibling slides) — Dima (2026-10-19): competitive context, "who shows next
+    to mine" — not a cross-platform/time signal like the other analytics views."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        groups = db.execute(
+            "SELECT carousel_id, COUNT(*) AS n, platform, MAX(captured_at) AS last_seen_at "
+            "FROM creatives WHERE carousel_id IS NOT NULL AND carousel_id != '' "
+            "GROUP BY carousel_id HAVING n > 1 ORDER BY last_seen_at DESC LIMIT 30"
+        ).fetchall()
+        items = []
+        for g in groups:
+            members = db.execute(
+                "SELECT id,domain,title,image_url,carousel_slide_index,detection_method FROM creatives "
+                "WHERE carousel_id=? ORDER BY COALESCE(carousel_slide_index,999)",
+                (g["carousel_id"],),
+            ).fetchall()
+            items.append({
+                "carousel_id": g["carousel_id"], "platform": g["platform"],
+                "member_count": g["n"], "last_seen_at": g["last_seen_at"],
+                "members": [dict(m) for m in members],
+            })
+    return {"items": items}
+
+
+@app.get("/api/v1/analytics/campaigns")
+def api_campaigns(principal: dict = Depends(public_api_principal)):
+    """Distinct campaign_id_candidate values (markup-derived, from creative_identifiers)
+    with creative counts — each clickable into the library filtered by that campaign
+    (same UX as advertiser/job_id filtering). Not gated on advertiser disclosure."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT ci.identifier_value AS campaign_id, COUNT(DISTINCT ci.creative_id) AS n, "
+            "MAX(c.captured_at) AS last_seen_at "
+            "FROM creative_identifiers ci JOIN creatives c ON c.id=ci.creative_id "
+            "WHERE ci.identifier_type='campaign_id_candidate' "
+            "GROUP BY ci.identifier_value ORDER BY n DESC LIMIT 200"
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+# utm_term placeholder literals seen in real captured UTM data (job #65) — a tracking
+# template left unresolved (e.g. the advertiser's ad system never substituted a real
+# keyword), not an actual search term. Counting these as "keywords" would be noise.
+_UTM_TERM_PLACEHOLDERS = {
+    "", "---autotargeting", "{keyword}", "{keyword:}", "{target}", "{adtarget}",
+    "{targeting}", "{phrase}", "{phraseid}", "undefined", "none", "null",
+}
+
+
+@app.get("/api/v1/analytics/keywords")
+def api_keywords(principal: dict = Depends(public_api_principal)):
+    """Distinct non-empty utm_term values (from creative_utm, synced regardless of
+    advertiser disclosure) with creative counts — "Ключевые слова" tab. Filters out known
+    tracking-template placeholder literals rather than counting them as real keywords."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT cu.utm_term AS keyword, COUNT(DISTINCT cu.creative_id) AS n, "
+            "MAX(c.captured_at) AS last_seen_at "
+            "FROM creative_utm cu JOIN creatives c ON c.id=cu.creative_id "
+            "WHERE COALESCE(cu.utm_term,'') != '' "
+            "GROUP BY cu.utm_term ORDER BY n DESC LIMIT 500"
+        ).fetchall()
+        items = [
+            dict(r) for r in rows
+            if (r["keyword"] or "").strip().lower() not in _UTM_TERM_PLACEHOLDERS
+        ][:200]
+    return {"items": items}
+
+
+@app.get("/api/v1/analytics/coverage")
+def api_coverage(principal: dict = Depends(public_api_principal)):
+    """Advertiser-disclosure coverage %, grouped by platform/detection_method/creative_type —
+    synced from MySQL's parsya_advertiser_coverage_report VIEW. Shows exactly where the
+    AdTune pipeline still needs work, visually, not just in log analysis."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT platform, detection_method, creative_type, total_creatives, "
+            "disclosed_creatives, disclosed_pct FROM advertiser_coverage_report "
+            "ORDER BY total_creatives DESC LIMIT 500"
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 @app.get("/api/admin/status")
