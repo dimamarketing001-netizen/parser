@@ -1415,6 +1415,46 @@ def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = He
     return {"ok": True}
 
 
+def notify_telegram_captcha(job_id: int, url: str = "", title: str = "") -> bool:
+    """Asks the production server (info517.fvds.ru) to send the Telegram CAPTCHA alert,
+    instead of calling api.telegram.org directly from here.
+
+    Dima (2026-10-22): "уведомления в телегу почему-то перестали приходить, нужно
+    проправить". Root cause, confirmed live: this WSL machine's network cannot reach
+    api.telegram.org at all (DNS resolves fine, but both the IPv6 and IPv4 routes time out —
+    confirmed via a direct `curl -v`, while github.com/ya.ru work normally from the same
+    host) — a network-level block, not a code bug. The production server (which already has
+    its own working copy of the Telegram-send code, confirmed live) does NOT have this
+    block, so it now does the actual sending via a small relay endpoint
+    (POST /api/relay/telegram-captcha, same worker-token auth as any other worker call).
+    Decided with Dima: keep the rest of the control plane on WSL, but this one piece of
+    functionality has to live where the network actually allows it."""
+    relay_url = os.getenv("PARSYA_TELEGRAM_RELAY_URL", "").strip()
+    if not relay_url:
+        print("[telegram] PARSYA_TELEGRAM_RELAY_URL не задан — relay отключён.", flush=True)
+        return False
+    if not WORKER_TOKEN:
+        print("[telegram] PARSYA_WORKER_TOKEN не задан — relay отключён.", flush=True)
+        return False
+
+    import urllib.request
+
+    request = urllib.request.Request(
+        relay_url,
+        data=json.dumps({"job_id": job_id, "url": url, "title": title}, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {WORKER_TOKEN}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    if not result.get("telegram_notified"):
+        raise RuntimeError(f"Relay не подтвердил отправку: {result}")
+
+    print(f"[telegram] Уведомление о CAPTCHA отправлено (через relay) для запуска #{job_id}.", flush=True)
+    return True
+
+
 @app.post("/api/worker/jobs/{job_id}/browser/state")
 def worker_browser_state(job_id: int, payload: BrowserStateIn, authorization: str | None = Header(default=None)):
     """Parser subprocess posts a screenshot here roughly once a second while blocked on a
@@ -1422,6 +1462,15 @@ def worker_browser_state(job_id: int, payload: BrowserStateIn, authorization: st
     worker_auth(authorization)
     now = now_iso()
     with closing(connect()) as db:
+        previous = db.execute(
+            "SELECT active,captcha_required FROM browser_sessions WHERE job_id=?", (job_id,)
+        ).fetchone()
+        # Notify only at the START of a new manual-CAPTCHA episode — not on every ~1s
+        # screenshot poll while the same episode is still ongoing.
+        should_notify = bool(
+            payload.active and payload.captcha_required
+            and (previous is None or not previous["active"] or not previous["captcha_required"])
+        )
         db.execute(
             "INSERT INTO browser_sessions(job_id,active,captcha_required,url,title,screenshot_b64,viewport_width,viewport_height,updated_at,pending_command_json) "
             "VALUES(?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(job_id) DO UPDATE SET "
@@ -1432,7 +1481,14 @@ def worker_browser_state(job_id: int, payload: BrowserStateIn, authorization: st
              payload.screenshot_b64, payload.viewport_width, payload.viewport_height, now),
         )
         db.commit()
-    return {"ok": True}
+    telegram_notified = False
+    if should_notify:
+        try:
+            telegram_notified = notify_telegram_captcha(job_id, payload.url, payload.title)
+        except Exception as exc:
+            # A Telegram failure must never block the local manual-CAPTCHA panel itself.
+            print(f"[telegram] Не удалось отправить уведомление: {type(exc).__name__}: {exc}", flush=True)
+    return {"ok": True, "telegram_notified": telegram_notified}
 
 
 @app.get("/api/worker/jobs/{job_id}/browser/command")
