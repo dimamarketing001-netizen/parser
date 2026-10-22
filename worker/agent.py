@@ -23,6 +23,25 @@ def _chunked(items, size):
             return
         yield chunk
 
+
+def _normalize_domain_for_compare(domain: Any) -> str:
+    """Same canonicalization as parsya_advertiser_enrichment.normalize_domain_for_compare
+    (2026-10-22) — kept as its own copy since the worker is a separate repo/process and
+    doesn't import across repos for a single small helper. Punycode/Unicode IDN forms of
+    the same domain, a bare `www.` prefix, and case differences must not count as a
+    mismatch for landing_domain_mismatch."""
+    domain = str(domain or "").strip().lower()
+    if not domain:
+        return ""
+    if domain.startswith("www."):
+        domain = domain[4:]
+    try:
+        import idna
+        domain = idna.encode(domain, uts46=True).decode("ascii")
+    except Exception:
+        pass
+    return domain
+
 import requests
 
 VERSION = "1.0.0"
@@ -595,10 +614,17 @@ class Worker:
         return sent
 
     def _sync_landing_mismatch(self, connection: Any, job_id: int, creative_hashes: set) -> int:
-        """Copies landing_domain_mismatch (advertiser's own declared site domain vs. where
-        the ad actually lands) from MySQL's parsya_creative_full VIEW, which already
-        computes it. Queued 2026-10-18 as "always 0 in practice back then" — now showing
-        118 real mismatches out of ~3950 rows, worth exposing."""
+        """Reads the advertiser's declared site domain and the ad's actual landing domain
+        from MySQL's parsya_creative_full VIEW, then recomputes landing_domain_mismatch
+        HERE (via _normalize_domain_for_compare) instead of trusting the view's own raw
+        `<>` comparison. Why: the view's comparison is a byte-level string compare, which
+        flags punycode vs. the equivalent Unicode/Cyrillic form of the same IDN domain
+        (confirmed real example 2026-10-22: `xn--b1addek2adh0b5a9df.xn--p1ai` vs
+        `деньживотных.рф` — same domain) and a bare `www.` prefix as false "mismatches".
+        Recomputing in Python here fixes this for every row on every sync, including
+        historical rows written before the domain-normalization fix landed in
+        parsya_advertiser_enrichment.py — no separate backfill needed. Queued 2026-10-18
+        as "always 0 in practice back then" — now showing real mismatches, worth exposing."""
         if not creative_hashes:
             return 0
         hashes = sorted(creative_hashes)
@@ -609,19 +635,22 @@ class Worker:
                 for chunk in _chunked(hashes, 200):
                     placeholders = ",".join(["%s"] * len(chunk))
                     cursor.execute(
-                        f"SELECT creative_hash, advertised_site_domain, landing_domain_mismatch "
+                        f"SELECT creative_hash, advertised_site_domain, final_url_domain "
                         f"FROM parsya_creative_full WHERE creative_hash IN ({placeholders}) "
-                        f"AND advertised_site_domain IS NOT NULL",
+                        f"AND advertised_site_domain IS NOT NULL AND final_url_domain IS NOT NULL",
                         chunk,
                     )
                     for row in cursor.fetchall():
                         h = row.get("creative_hash") or ""
                         if not h:
                             continue
+                        advertised_raw = str(row.get("advertised_site_domain") or "")
+                        final_raw = str(row.get("final_url_domain") or "")
+                        mismatch = _normalize_domain_for_compare(advertised_raw) != _normalize_domain_for_compare(final_raw)
                         items.append({
                             "creative_hash": h,
-                            "advertised_site_domain": str(row.get("advertised_site_domain") or ""),
-                            "landing_domain_mismatch": bool(row.get("landing_domain_mismatch")),
+                            "advertised_site_domain": advertised_raw,
+                            "landing_domain_mismatch": mismatch,
                         })
             finally:
                 cursor.close()

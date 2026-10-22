@@ -6,12 +6,15 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+import snowballstemmer
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,12 +69,89 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _pylower(value: str | None) -> str:
+    # SQLite's built-in LOWER()/COLLATE NOCASE only fold ASCII A-Z — useless for the
+    # Russian search queries (key_text) that "intent" filtering matches on. Registered
+    # as a real SQLite function (not done in Python before the query) so it can be used
+    # directly inside WHERE/JOIN clauses built across many endpoints (see _intent_exists_sql).
+    return (value or "").strip().lower()
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=15000")
+    conn.create_function("PYLOWER", 1, _pylower)
     return conn
+
+
+def _parse_intents(intent: str) -> list[str]:
+    """`intent` is a comma-separated list of exact key_text values (the frontend lets a
+    viewer select several at once — e.g. both "Пенсия" and "Увеличение пенсии" — rather
+    than silently auto-merging differently-worded runs of the same real-world topic;
+    see _related_intents for the stemming-based *suggestion* of what to add)."""
+    return [part.strip() for part in (intent or "").split(",") if part.strip()]
+
+
+def _intent_exists_sql(creative_alias: str, intents: list[str]) -> str:
+    """Intent = one of a set of exact (case/whitespace-insensitive) search queries
+    (jobs.key_text) a creative was captured under. Used everywhere a creative-derived
+    report should default to showing only the active search(es)' own results (see
+    api_list_intents and the `intent` param accepted by every creative-derived
+    listing/analytics endpoint below)."""
+    placeholders = ",".join(["PYLOWER(?)"] * len(intents))
+    return (
+        f"EXISTS (SELECT 1 FROM occurrences io JOIN jobs ij ON ij.id=io.job_id "
+        f"WHERE io.creative_id={creative_alias}.id AND PYLOWER(ij.key_text) IN ({placeholders}))"
+    )
+
+
+_RU_STEMMER = snowballstemmer.stemmer("russian")
+# Short/generic words that shouldn't by themselves count as a shared "topic" between two
+# differently-worded search queries — stemming alone isn't enough: "красные кроссовки"
+# and "красные туфли" share the color but are different products, so colors/sizes/filler
+# words are excluded from the stem-overlap used to suggest related intents.
+_INTENT_STOPWORDS = {
+    "и", "или", "для", "как", "что", "это", "все", "без", "под", "про", "где", "when",
+    "быстро", "срочно", "дешево", "дешёво", "лучший", "лучшая", "лучшее", "новый", "новая",
+    "онлайн", "купить", "цена", "цены", "недорого",
+    "красный", "красная", "красные", "синий", "синяя", "синие", "белый", "белая", "белые",
+    "черный", "чёрный", "черная", "чёрная", "черные", "чёрные", "зеленый", "зелёный",
+}
+
+
+def _intent_stems(key_text: str) -> set[str]:
+    words = re.findall(r"[a-zа-яё]+", (key_text or "").lower())
+    stems = set()
+    for word in words:
+        if len(word) < 4 or word in _INTENT_STOPWORDS:
+            continue
+        stem = _RU_STEMMER.stemWord(word)
+        if len(stem) >= 3:
+            stems.add(stem)
+    return stems
+
+
+def _related_intents(anchor_texts: list[str], all_intents: list[str]) -> list[str]:
+    """Other key_texts that share at least one meaningful stem with any of anchor_texts —
+    a *suggestion* surfaced in the UI (never silently applied) for "these other searches
+    look like the same real-world topic, want to include them too?" (2026-10-22, see
+    api_list_intents). Deliberately conservative: shared stopword-only/short overlaps
+    don't count, to avoid chaining unrelated queries through a common filler word."""
+    anchor_stems: set[str] = set()
+    for text in anchor_texts:
+        anchor_stems |= _intent_stems(text)
+    if not anchor_stems:
+        return []
+    related = []
+    anchor_lower = {t.strip().lower() for t in anchor_texts}
+    for candidate in all_intents:
+        if candidate.strip().lower() in anchor_lower:
+            continue
+        if _intent_stems(candidate) & anchor_stems:
+            related.append(candidate)
+    return related
 
 
 def init_db() -> None:
@@ -1784,13 +1864,21 @@ def _creative_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 @app.get("/api/v1/advertisers")
-def api_list_advertisers(q: str = "", limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
+def api_list_advertisers(q: str = "", intent: str = "", limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
-        where, params = "", []
+        where_parts, params = [], []
         if q:
-            where = "WHERE a.inn LIKE ? OR a.canonical_name LIKE ?"
-            params = [f"%{q}%", f"%{q}%"]
+            where_parts.append("(a.inn LIKE ? OR a.canonical_name LIKE ?)")
+            params.extend([f"%{q}%", f"%{q}%"])
+        intents = _parse_intents(intent)
+        if intents:
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM creative_advertiser_links l2 JOIN creatives c ON c.id=l2.creative_id "
+                f"WHERE l2.advertiser_id=a.id AND {_intent_exists_sql('c', intents)})"
+            )
+            params.extend(intents)
+        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
         total = db.execute(f"SELECT COUNT(*) FROM advertisers a {where}", params).fetchone()[0]
         rows = db.execute(
             f"SELECT a.id,a.inn,a.canonical_name,a.address,a.phone,a.website_url,a.first_seen_at,a.last_seen_at,"
@@ -1872,11 +1960,32 @@ def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0, princip
     }
 
 
+def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
+    """Attaches `intents`: the distinct search queries (jobs.key_text) each creative was
+    captured under, so the UI can show "this ad belongs to «X»" on every card/detail
+    view regardless of whether intent-scoping is currently filtering the list or not."""
+    ids = [item["id"] for item in items if item.get("id") is not None]
+    if not ids:
+        return
+    by_id: dict[int, list[str]] = {}
+    for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
+        placeholders = ",".join(["?"] * len(chunk))
+        rows = db.execute(
+            f"SELECT DISTINCT o.creative_id, j.key_text FROM occurrences o JOIN jobs j ON j.id=o.job_id "
+            f"WHERE o.creative_id IN ({placeholders}) AND j.key_text IS NOT NULL AND j.key_text<>''",
+            chunk,
+        ).fetchall()
+        for row in rows:
+            by_id.setdefault(row["creative_id"], []).append(row["key_text"])
+    for item in items:
+        item["intents"] = by_id.get(item.get("id"), [])
+
+
 @app.get("/api/v1/creatives")
 def api_list_creatives(
     inn: str = "", platform: str = "", q: str = "", status: str = "", job_id: int | None = None,
     has_advertiser: bool | None = None, has_app: bool | None = None, has_discount: bool | None = None,
-    campaign_id: str = "", utm_campaign: str = "", keyword: str = "",
+    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "",
     date_from: str = "", date_to: str = "",
     sort: str = "recent", limit: int = 50, offset: int = 0,
     principal: dict = Depends(public_api_principal),
@@ -1886,6 +1995,10 @@ def api_list_creatives(
         joins = []
         where_parts = []
         params: list[Any] = []
+        intents = _parse_intents(intent)
+        if intents:
+            where_parts.append(_intent_exists_sql("c", intents))
+            params.extend(intents)
         if inn:
             joins.append("JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id")
             where_parts.append("a.inn=?")
@@ -1945,6 +2058,7 @@ def api_list_creatives(
             params + [limit, offset],
         ).fetchall()
         items = [_creative_row_to_dict(r) for r in rows]
+        _attach_intents(db, items)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -1953,6 +2067,41 @@ def api_list_platforms(principal: dict = Depends(public_api_principal)):
     with closing(connect()) as db:
         rows = db.execute("SELECT platform, COUNT(*) n FROM creatives GROUP BY platform ORDER BY n DESC").fetchall()
     return {"items": [{"platform": r["platform"], "creatives_count": r["n"]} for r in rows]}
+
+
+@app.get("/api/v1/intents")
+def api_list_intents(principal: dict = Depends(public_api_principal)):
+    """Every distinct search query (jobs.key_text) run so far, with how many creatives/runs
+    it produced — populates the global "intent" switcher that scopes the whole ЛК (library
+    + every analytics report) to one search's own results by default (2026-10-22, see the
+    `intent` param accepted by every creative-derived listing below). Grouped case/space-
+    insensitively (PYLOWER) so "Кроссовки" and "кроссовки " count as the same intent."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT PYLOWER(j.key_text) AS intent_key,
+                   MIN(j.key_text) AS display_text,
+                   COUNT(DISTINCT j.id) AS runs_count,
+                   COUNT(DISTINCT o.creative_id) AS creatives_count,
+                   MAX(j.created_at) AS last_run_at
+            FROM jobs j
+            LEFT JOIN occurrences o ON o.job_id = j.id
+            WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> ''
+            GROUP BY intent_key
+            ORDER BY last_run_at DESC
+            """
+        ).fetchall()
+    all_texts = [r["display_text"] for r in rows]
+    items = []
+    for r in rows:
+        text = r["display_text"]
+        items.append({
+            "intent": text, "runs_count": r["runs_count"],
+            "creatives_count": r["creatives_count"], "last_run_at": r["last_run_at"],
+            "related": _related_intents([text], all_texts),
+        })
+    return {"items": items}
 
 
 @app.get("/api/v1/creatives/{creative_id}")
@@ -1992,8 +2141,10 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
             "WHERE creative_id=? ORDER BY first_seen_at DESC LIMIT 50",
             (creative_id,),
         ).fetchall()
+        creative_dict = _creative_row_to_dict(row)
+        _attach_intents(db, [creative_dict])
     return {
-        "creative": _creative_row_to_dict(row),
+        "creative": creative_dict,
         "advertisers": [dict(r) for r in advertisers],
         "identifiers": [dict(r) for r in identifiers],
         "occurrences": [dict(r) for r in occurrences],
@@ -2165,27 +2316,41 @@ def api_remove_collection_item(collection_id: int, group_key: str, principal: di
 
 
 @app.get("/api/v1/coverage")
-def api_coverage(principal: dict = Depends(public_api_principal)):
+def api_coverage(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Real per-platform quality stats for the "Источники и качество" screen — no
     placeholder numbers, everything here comes straight from synced creative data."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_where = f"WHERE {_intent_exists_sql('c', intents)}" if intents else ""
+    intent_params = intents
     with closing(connect()) as db:
         platform_rows = db.execute(
             "SELECT platform, COUNT(*) total, "
             "SUM(CASE WHEN recognition_status='recognized' THEN 1 ELSE 0 END) recognized, "
             "SUM(CASE WHEN recognition_status='partial' THEN 1 ELSE 0 END) partial, "
-            "MAX(captured_at) last_captured_at "
-            "FROM creatives GROUP BY platform ORDER BY total DESC"
+            f"MAX(captured_at) last_captured_at "
+            f"FROM creatives c {intent_where} GROUP BY platform ORDER BY total DESC",
+            intent_params,
         ).fetchall()
         with_advertiser_rows = db.execute(
-            "SELECT c.platform, COUNT(DISTINCT c.id) n FROM creatives c "
-            "JOIN creative_advertiser_links l ON l.creative_id=c.id GROUP BY c.platform"
+            f"SELECT c.platform, COUNT(DISTINCT c.id) n FROM creatives c "
+            f"JOIN creative_advertiser_links l ON l.creative_id=c.id {intent_where} GROUP BY c.platform",
+            intent_params,
         ).fetchall()
         with_advertiser = {r["platform"]: r["n"] for r in with_advertiser_rows}
         totals = {
-            "creatives": db.execute("SELECT COUNT(*) FROM creatives").fetchone()[0],
-            "advertisers": db.execute("SELECT COUNT(*) FROM advertisers").fetchone()[0],
-            "creatives_with_advertiser": db.execute("SELECT COUNT(DISTINCT creative_id) FROM creative_advertiser_links").fetchone()[0],
+            "creatives": db.execute(f"SELECT COUNT(*) FROM creatives c {intent_where}", intent_params).fetchone()[0],
+            "advertisers": db.execute(
+                (f"SELECT COUNT(DISTINCT l.advertiser_id) FROM creative_advertiser_links l "
+                 f"JOIN creatives c ON c.id=l.creative_id {intent_where}") if intents else
+                "SELECT COUNT(*) FROM advertisers",
+                intent_params,
+            ).fetchone()[0],
+            "creatives_with_advertiser": db.execute(
+                f"SELECT COUNT(DISTINCT l.creative_id) FROM creative_advertiser_links l "
+                f"JOIN creatives c ON c.id=l.creative_id {intent_where}",
+                intent_params,
+            ).fetchone()[0],
         }
     platforms = []
     for r in platform_rows:
@@ -2198,19 +2363,23 @@ def api_coverage(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/analytics/cross-platform")
-def api_cross_platform_reuse(principal: dict = Depends(public_api_principal)):
+def api_cross_platform_reuse(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Creatives (grouped by content_fingerprint) seen on more than one platform —
     the clearest signal that a campaign is real and scaled, not a one-off test."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
     with closing(connect()) as db:
         rows = db.execute(
             "SELECT c.content_fingerprint, COUNT(DISTINCT o.platform) AS platform_count, "
             "GROUP_CONCAT(DISTINCT o.platform) AS platforms, "
             "MIN(c.captured_at) AS first_seen_at, MAX(c.captured_at) AS last_seen_at "
             "FROM creatives c JOIN occurrences o ON o.creative_id=c.id "
-            "WHERE c.content_fingerprint IS NOT NULL AND c.content_fingerprint != '' "
-            "GROUP BY c.content_fingerprint HAVING platform_count > 1 "
-            "ORDER BY platform_count DESC, last_seen_at DESC LIMIT 30"
+            "WHERE c.content_fingerprint IS NOT NULL AND c.content_fingerprint != ''"
+            + intent_sql +
+            " GROUP BY c.content_fingerprint HAVING platform_count > 1 "
+            "ORDER BY platform_count DESC, last_seen_at DESC LIMIT 30",
+            intents,
         ).fetchall()
         items = []
         for r in rows:
@@ -2234,16 +2403,20 @@ def api_cross_platform_reuse(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/analytics/carousels")
-def api_carousels(principal: dict = Depends(public_api_principal)):
+def api_carousels(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Creatives sharing a carousel_id were shown side-by-side in the same scrolling ad
     carousel (sibling slides) — Dima (2026-10-19): competitive context, "who shows next
     to mine" — not a cross-platform/time signal like the other analytics views."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
     with closing(connect()) as db:
         groups = db.execute(
             "SELECT carousel_id, COUNT(*) AS n, platform, MAX(captured_at) AS last_seen_at "
-            "FROM creatives WHERE carousel_id IS NOT NULL AND carousel_id != '' "
-            "GROUP BY carousel_id HAVING n > 1 ORDER BY last_seen_at DESC LIMIT 30"
+            "FROM creatives c WHERE carousel_id IS NOT NULL AND carousel_id != ''"
+            + intent_sql +
+            " GROUP BY carousel_id HAVING n > 1 ORDER BY last_seen_at DESC LIMIT 30",
+            intents,
         ).fetchall()
         items = []
         for g in groups:
@@ -2261,18 +2434,22 @@ def api_carousels(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/analytics/campaigns")
-def api_campaigns(principal: dict = Depends(public_api_principal)):
+def api_campaigns(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Distinct campaign_id_candidate values (markup-derived, from creative_identifiers)
     with creative counts — each clickable into the library filtered by that campaign
     (same UX as advertiser/job_id filtering). Not gated on advertiser disclosure."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
     with closing(connect()) as db:
         rows = db.execute(
             "SELECT ci.identifier_value AS campaign_id, COUNT(DISTINCT ci.creative_id) AS n, "
             "MAX(c.captured_at) AS last_seen_at "
             "FROM creative_identifiers ci JOIN creatives c ON c.id=ci.creative_id "
-            "WHERE ci.identifier_type='campaign_id_candidate' "
-            "GROUP BY ci.identifier_value ORDER BY n DESC LIMIT 200"
+            "WHERE ci.identifier_type='campaign_id_candidate'"
+            + intent_sql +
+            " GROUP BY ci.identifier_value ORDER BY n DESC LIMIT 200",
+            intents,
         ).fetchall()
     return {"items": [dict(r) for r in rows]}
 
@@ -2287,18 +2464,22 @@ _UTM_TERM_PLACEHOLDERS = {
 
 
 @app.get("/api/v1/analytics/keywords")
-def api_keywords(principal: dict = Depends(public_api_principal)):
+def api_keywords(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Distinct non-empty utm_term values (from creative_utm, synced regardless of
     advertiser disclosure) with creative counts — "Ключевые слова" tab. Filters out known
     tracking-template placeholder literals rather than counting them as real keywords."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
     with closing(connect()) as db:
         rows = db.execute(
             "SELECT cu.utm_term AS keyword, COUNT(DISTINCT cu.creative_id) AS n, "
             "MAX(c.captured_at) AS last_seen_at "
             "FROM creative_utm cu JOIN creatives c ON c.id=cu.creative_id "
-            "WHERE COALESCE(cu.utm_term,'') != '' "
-            "GROUP BY cu.utm_term ORDER BY n DESC LIMIT 500"
+            "WHERE COALESCE(cu.utm_term,'') != ''"
+            + intent_sql +
+            " GROUP BY cu.utm_term ORDER BY n DESC LIMIT 500",
+            intents,
         ).fetchall()
         items = [
             dict(r) for r in rows
@@ -2311,7 +2492,11 @@ def api_keywords(principal: dict = Depends(public_api_principal)):
 def api_coverage(principal: dict = Depends(public_api_principal)):
     """Advertiser-disclosure coverage %, grouped by platform/detection_method/creative_type —
     synced from MySQL's parsya_advertiser_coverage_report VIEW. Shows exactly where the
-    AdTune pipeline still needs work, visually, not just in log analysis."""
+    AdTune pipeline still needs work, visually, not just in log analysis.
+    Deliberately NOT intent-scoped (2026-10-22): this table is a pre-aggregated global
+    rollup from MySQL with no creative_id/job_id back-reference in SQLite, so there's
+    nothing to join against per-intent without recomputing it from raw rows — a bigger
+    change than this endpoint's own health-metric purpose justifies right now."""
     require_user_principal(principal)
     with closing(connect()) as db:
         rows = db.execute(
@@ -2323,31 +2508,34 @@ def api_coverage(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/analytics/fastest-growing")
-def api_fastest_growing(principal: dict = Depends(public_api_principal)):
+def api_fastest_growing(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Advertisers whose creative count THIS week outpaces the PRIOR week — richer signal
     than the flat "new in 7 days" feed (which only shows *who has any new creative*, not
     who's actually ramping up spend/activity vs their own baseline). From the backlog
     ("Fastest-growing advertisers" idea, queued 2026-10-19): compares each advertiser's
     distinct-creative count in [now-7d, now) against [now-14d, now-7d), by captured_at."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
     with closing(connect()) as db:
         now = datetime.now(timezone.utc)
         week_start = (now - timedelta(days=7)).replace(microsecond=0).isoformat()
         prior_week_start = (now - timedelta(days=14)).replace(microsecond=0).isoformat()
         rows = db.execute(
-            """
+            f"""
             SELECT a.id, a.inn, a.canonical_name,
                    SUM(CASE WHEN c.captured_at >= ? THEN 1 ELSE 0 END) AS this_week,
                    SUM(CASE WHEN c.captured_at >= ? AND c.captured_at < ? THEN 1 ELSE 0 END) AS prior_week
             FROM advertisers a
             JOIN creative_advertiser_links l ON l.advertiser_id = a.id
             JOIN creatives c ON c.id = l.creative_id
+            WHERE 1=1{intent_sql}
             GROUP BY a.id
             HAVING this_week >= 2 AND this_week > prior_week
             ORDER BY (this_week - prior_week) DESC, this_week DESC
             LIMIT 50
             """,
-            (week_start, prior_week_start, week_start),
+            (week_start, prior_week_start, week_start) + tuple(intents),
         ).fetchall()
         items = [
             {
@@ -2361,15 +2549,19 @@ def api_fastest_growing(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/analytics/landing-mismatch")
-def api_landing_mismatch(principal: dict = Depends(public_api_principal)):
+def api_landing_mismatch(intent: str = "", principal: dict = Depends(public_api_principal)):
     """Creatives where the advertiser's OWN declared site domain (from their resolved
     Yandex/VK profile) differs from the domain the ad actually lands on — mirrors MySQL's
-    parsya_creative_full.landing_domain_mismatch. Confirmed on real data (2026-10-22): 118
-    real mismatches out of ~3950 rows. Caveat worth knowing: some of these are benign
-    (www./subdomain variants of the same site, or an app-install ad landing on
-    apps.apple.com instead of a website) rather than something suspicious — this surfaces
-    candidates to look at, it doesn't itself judge severity."""
+    parsya_creative_full.landing_domain_mismatch, but recomputed per-sync in
+    worker/agent.py's _sync_landing_mismatch with punycode/IDN + www-prefix normalization
+    (2026-10-22, see normalize_domain_for_compare) — 118 raw mismatches turned out to be
+    66 real ones once punycode/Unicode-IDN and www. variants were no longer miscounted.
+    Remaining caveat: some of the 66 are still benign (an app-install ad landing on
+    apps.apple.com instead of a website, or a genuine subdomain change) rather than
+    something suspicious — this surfaces candidates to look at, not a severity verdict."""
     require_user_principal(principal)
+    intents = _parse_intents(intent)
+    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
     with closing(connect()) as db:
         rows = db.execute(
             """
@@ -2377,8 +2569,10 @@ def api_landing_mismatch(principal: dict = Depends(public_api_principal)):
                    u.final_url_domain, u.advertised_site_domain
             FROM creative_utm u JOIN creatives c ON c.id = u.creative_id
             WHERE u.landing_domain_mismatch = 1
-            ORDER BY c.captured_at DESC LIMIT 100
             """
+            + intent_sql +
+            " ORDER BY c.captured_at DESC LIMIT 100",
+            intents,
         ).fetchall()
     return {"items": [dict(r) for r in rows]}
 
