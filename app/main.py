@@ -2167,6 +2167,44 @@ def api_coverage(principal: dict = Depends(public_api_principal)):
     return {"items": [dict(r) for r in rows]}
 
 
+@app.get("/api/v1/analytics/fastest-growing")
+def api_fastest_growing(principal: dict = Depends(public_api_principal)):
+    """Advertisers whose creative count THIS week outpaces the PRIOR week — richer signal
+    than the flat "new in 7 days" feed (which only shows *who has any new creative*, not
+    who's actually ramping up spend/activity vs their own baseline). From the backlog
+    ("Fastest-growing advertisers" idea, queued 2026-10-19): compares each advertiser's
+    distinct-creative count in [now-7d, now) against [now-14d, now-7d), by captured_at."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        now = datetime.now(timezone.utc)
+        week_start = (now - timedelta(days=7)).replace(microsecond=0).isoformat()
+        prior_week_start = (now - timedelta(days=14)).replace(microsecond=0).isoformat()
+        rows = db.execute(
+            """
+            SELECT a.id, a.inn, a.canonical_name,
+                   SUM(CASE WHEN c.captured_at >= ? THEN 1 ELSE 0 END) AS this_week,
+                   SUM(CASE WHEN c.captured_at >= ? AND c.captured_at < ? THEN 1 ELSE 0 END) AS prior_week
+            FROM advertisers a
+            JOIN creative_advertiser_links l ON l.advertiser_id = a.id
+            JOIN creatives c ON c.id = l.creative_id
+            GROUP BY a.id
+            HAVING this_week >= 2 AND this_week > prior_week
+            ORDER BY (this_week - prior_week) DESC, this_week DESC
+            LIMIT 50
+            """,
+            (week_start, prior_week_start, week_start),
+        ).fetchall()
+        items = [
+            {
+                "advertiser_id": r["id"], "inn": r["inn"], "canonical_name": r["canonical_name"],
+                "this_week": r["this_week"], "prior_week": r["prior_week"],
+                "growth": r["this_week"] - r["prior_week"],
+            }
+            for r in rows
+        ]
+    return {"items": items}
+
+
 @app.get("/api/admin/status")
 def admin_status(request: Request):
     if not auth_page(request):
