@@ -217,6 +217,31 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_coverage_platform ON advertiser_coverage_report(platform);
 
+        -- Landing-page/UTM change history per creative — one row per DISTINCT change
+        -- (deduped upstream by change_signature in parsya_creative_destination_history),
+        -- append-only: a creative whose campaign/landing page changes over time gets a new
+        -- row here each time, not an overwrite. Dima (2026-10-19): "да, важно видеть, как
+        -- менялась кампания". Deliberately NOT synced until there was real accumulated
+        -- history to show (empty-state UI isn't worth building against) — now there is.
+        CREATE TABLE IF NOT EXISTS creative_destination_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          creative_id INTEGER NOT NULL,
+          change_signature TEXT NOT NULL,
+          tracking_url TEXT,
+          final_url TEXT,
+          final_url_domain TEXT,
+          utm_source TEXT,
+          utm_medium TEXT,
+          utm_campaign TEXT,
+          utm_content TEXT,
+          utm_term TEXT,
+          first_seen_at TEXT,
+          last_seen_at TEXT,
+          UNIQUE(creative_id, change_signature),
+          FOREIGN KEY(creative_id) REFERENCES creatives(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_dest_history_creative ON creative_destination_history(creative_id);
+
         -- Live remote-captcha-solving channel: the parser subprocess posts a screenshot
         -- here roughly once a second while a CAPTCHA blocks it, an admin viewing the run
         -- queues one command (click/key/text/scroll/refresh) at a time, and the parser
@@ -585,6 +610,25 @@ class CreativeUtmIn(BaseModel):
 
 class CreativeUtmBatch(BaseModel):
     items: list[CreativeUtmIn] = Field(max_length=200)
+
+
+class DestinationHistoryIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    change_signature: str = Field(min_length=1, max_length=128)
+    tracking_url: str = Field(default="", max_length=4000)
+    final_url: str = Field(default="", max_length=4000)
+    final_url_domain: str = Field(default="", max_length=253)
+    utm_source: str = Field(default="", max_length=255)
+    utm_medium: str = Field(default="", max_length=255)
+    utm_campaign: str = Field(default="", max_length=500)
+    utm_content: str = Field(default="", max_length=500)
+    utm_term: str = Field(default="", max_length=500)
+    first_seen_at: str = Field(default="", max_length=64)
+    last_seen_at: str = Field(default="", max_length=64)
+
+
+class DestinationHistoryBatch(BaseModel):
+    items: list[DestinationHistoryIn] = Field(max_length=400)
 
 
 class IdentifierIn(BaseModel):
@@ -1255,6 +1299,39 @@ def worker_creative_utm(job_id: int, payload: CreativeUtmBatch, authorization: s
     return {"ok": True, "accepted": accepted}
 
 
+@app.post("/api/worker/jobs/{job_id}/destination-history")
+def worker_destination_history(job_id: int, payload: DestinationHistoryBatch, authorization: str | None = Header(default=None)):
+    """Append-only landing-page/UTM change log per creative, synced from MySQL's
+    parsya_creative_destination_history (already deduped upstream by change_signature —
+    this just mirrors each distinct change as its own row, never overwrites one)."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for item in payload.items:
+            creative_hash = item.creative_hash.strip()
+            if not creative_hash:
+                continue
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            if not row:
+                continue
+            db.execute(
+                "INSERT INTO creative_destination_history"
+                "(creative_id,change_signature,tracking_url,final_url,final_url_domain,"
+                " utm_source,utm_medium,utm_campaign,utm_content,utm_term,first_seen_at,last_seen_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(creative_id,change_signature) DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                (row["id"], item.change_signature, item.tracking_url, item.final_url, item.final_url_domain,
+                 item.utm_source, item.utm_medium, item.utm_campaign, item.utm_content, item.utm_term,
+                 item.first_seen_at, item.last_seen_at),
+            )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
 @app.post("/api/worker/jobs/{job_id}/identifiers")
 def worker_creative_identifiers(job_id: int, payload: CreativeIdentifiersBatch, authorization: str | None = Header(default=None)):
     """campaign_id/banner_id/client_id/creative_id candidates (markup-derived), for ANY
@@ -1838,6 +1915,12 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
             "utm_term,resolve_status,resolved_at FROM creative_utm WHERE creative_id=?",
             (creative_id,),
         ).fetchone()
+        destination_history = db.execute(
+            "SELECT final_url,final_url_domain,utm_source,utm_medium,utm_campaign,utm_content,"
+            "utm_term,first_seen_at,last_seen_at FROM creative_destination_history "
+            "WHERE creative_id=? ORDER BY first_seen_at DESC LIMIT 50",
+            (creative_id,),
+        ).fetchall()
     return {
         "creative": _creative_row_to_dict(row),
         "advertisers": [dict(r) for r in advertisers],
@@ -1845,6 +1928,7 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
         "occurrences": [dict(r) for r in occurrences],
         "secondary_links": [dict(r) for r in secondary_links],
         "utm": dict(utm_row) if utm_row else None,
+        "destination_history": [dict(r) for r in destination_history],
     }
 
 

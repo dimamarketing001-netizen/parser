@@ -230,6 +230,7 @@ class Worker:
             sent_utm = self._sync_creative_utm(connection, job_id, synced_creative_hashes)
             sent_identifiers = self._sync_creative_identifiers(connection, job_id, synced_creative_hashes)
             sent_coverage = self._sync_coverage_report(connection, job_id)
+            sent_history = self._sync_destination_history(connection, job_id, synced_creative_hashes)
 
             summary["site_results_synced"] = sent_sites
             summary["creative_occurrences_synced"] = sent_creatives
@@ -239,12 +240,14 @@ class Worker:
             summary["utm_synced"] = sent_utm
             summary["identifiers_synced"] = sent_identifiers
             summary["coverage_report_synced"] = sent_coverage
+            summary["destination_history_synced"] = sent_history
             self.post_log(
                 job_id,
                 f"\n[worker] MySQL run_id={run_id}: площадок отправлено={sent_sites}, обнаружений отправлено={sent_creatives}, "
                 f"связей рекламодателя отправлено={sent_links}, доп.сигналов отправлено={sent_extras}, "
                 f"доп.ссылок отправлено={sent_secondary}, UTM отправлено={sent_utm}, "
-                f"идентификаторов отправлено={sent_identifiers}, строк coverage-report отправлено={sent_coverage}.\n",
+                f"идентификаторов отправлено={sent_identifiers}, строк coverage-report отправлено={sent_coverage}, "
+                f"истории кампаний отправлено={sent_history}.\n",
             )
         except Exception as exc:
             self.post_log(job_id, f"\n[worker] Ошибка синхронизации MySQL: {type(exc).__name__}: {exc}\n")
@@ -513,6 +516,67 @@ class Worker:
                 sent += int(result.get("accepted", 0))
             except Exception as exc:
                 self.post_log(job_id, f"\n[worker] Ошибка отправки UTM: {type(exc).__name__}: {exc}\n")
+        return sent
+
+    def _sync_destination_history(self, connection: Any, job_id: int, creative_hashes: set) -> int:
+        """Copies each creative's landing-page/UTM CHANGE LOG from
+        parsya_creative_destination_history — unlike _sync_creative_utm (current state,
+        one row per creative, overwritten in place), this is append-only: every distinct
+        change (already deduped upstream by change_signature) gets its own row, so the
+        detail view can show "how this campaign evolved over time" (Dima, 2026-10-19:
+        "да, важно видеть, как менялась кампания")."""
+        if not creative_hashes:
+            return 0
+        hashes = sorted(creative_hashes)
+        history_items: list[dict[str, Any]] = []
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                for chunk in _chunked(hashes, 200):
+                    placeholders = ",".join(["%s"] * len(chunk))
+                    cursor.execute(
+                        f"SELECT source_creative_hash, change_signature, tracking_url, final_url, "
+                        f"final_url_domain, utm_source, utm_medium, utm_campaign, utm_content, utm_term, "
+                        f"first_seen_at, last_seen_at "
+                        f"FROM parsya_creative_destination_history "
+                        f"WHERE source_creative_hash IN ({placeholders})",
+                        chunk,
+                    )
+                    for row in cursor.fetchall():
+                        h = row.get("source_creative_hash") or ""
+                        if not h:
+                            continue
+                        first_seen = row.get("first_seen_at")
+                        last_seen = row.get("last_seen_at")
+                        history_items.append({
+                            "creative_hash": h,
+                            "change_signature": str(row.get("change_signature") or ""),
+                            "tracking_url": str(row.get("tracking_url") or ""),
+                            "final_url": str(row.get("final_url") or ""),
+                            "final_url_domain": str(row.get("final_url_domain") or ""),
+                            "utm_source": str(row.get("utm_source") or ""),
+                            "utm_medium": str(row.get("utm_medium") or ""),
+                            "utm_campaign": str(row.get("utm_campaign") or ""),
+                            "utm_content": str(row.get("utm_content") or ""),
+                            "utm_term": str(row.get("utm_term") or ""),
+                            "first_seen_at": first_seen.isoformat() if hasattr(first_seen, "isoformat") else str(first_seen or ""),
+                            "last_seen_at": last_seen.isoformat() if hasattr(last_seen, "isoformat") else str(last_seen or ""),
+                        })
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self.post_log(job_id, f"\n[worker] Ошибка чтения destination-history из MySQL: {type(exc).__name__}: {exc}\n")
+            return 0
+
+        sent = 0
+        for chunk in _chunked(history_items, 100):
+            try:
+                result = self.request(
+                    "POST", f"/api/worker/jobs/{job_id}/destination-history", json={"items": chunk}
+                ).json()
+                sent += int(result.get("accepted", 0))
+            except Exception as exc:
+                self.post_log(job_id, f"\n[worker] Ошибка отправки destination-history: {type(exc).__name__}: {exc}\n")
         return sent
 
     def _sync_creative_identifiers(self, connection: Any, job_id: int, creative_hashes: set) -> int:
