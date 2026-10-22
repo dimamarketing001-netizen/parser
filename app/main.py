@@ -1341,11 +1341,24 @@ def worker_advertiser_links(job_id: int, payload: AdvertiserLinksBatch, authoriz
                     (link.content_fingerprint, creative_id),
                 )
             inn = link.advertiser_inn.strip() or None
+            # Dima (2026-10-22): "режется название у организаций, вижу только ОБЩЕСТВО С
+            # ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ, а самого имени нет". Root cause was a regex bug
+            # in parsya_advertiser_enrichment.py (now fixed) that truncated names at an
+            # escaped quote inside the raw JSON — but the OLD "fill only if currently empty"
+            # rule here meant a truncated name, once written, could NEVER self-heal on a
+            # later sync even after the source bug was fixed (the field wasn't empty, just
+            # wrong). Now prefers the LONGER non-empty name on conflict — a later, correctly
+            # un-truncated sync overwrites a shorter/truncated one; a shorter/empty value
+            # never overwrites a longer one already stored.
             db.execute(
                 "INSERT INTO advertisers(identity_key,inn,canonical_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?) "
                 "ON CONFLICT(identity_key) DO UPDATE SET "
                 "inn=COALESCE(advertisers.inn,excluded.inn),"
-                "canonical_name=CASE WHEN COALESCE(advertisers.canonical_name,'')='' THEN excluded.canonical_name ELSE advertisers.canonical_name END,"
+                "canonical_name=CASE "
+                "WHEN COALESCE(excluded.canonical_name,'')='' THEN advertisers.canonical_name "
+                "WHEN COALESCE(advertisers.canonical_name,'')='' THEN excluded.canonical_name "
+                "WHEN LENGTH(excluded.canonical_name)>LENGTH(advertisers.canonical_name) THEN excluded.canonical_name "
+                "ELSE advertisers.canonical_name END,"
                 "last_seen_at=excluded.last_seen_at",
                 (link.advertiser_identity_key, inn, link.advertiser_name or None, now, now),
             )
