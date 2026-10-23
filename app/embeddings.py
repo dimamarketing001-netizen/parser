@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import struct
 import time
-from typing import Any
+from typing import Any, Callable
 
 try:
     from google import genai
@@ -69,7 +69,11 @@ def parse_retry_delay_seconds(exc: Exception) -> float | None:
     return None
 
 
-def compute_embedding_single(text: str, max_wait_seconds: float = 3600) -> tuple[list[float], str] | None:
+def compute_embedding_single(
+    text: str,
+    max_wait_seconds: float = 3600,
+    on_hard_failure: Callable[[str], None] | None = None,
+) -> tuple[list[float], str] | None:
     """One embedding, one Gemini request - the production ingestion path (2026-10-23,
     Dima's design): no batching, wait out 429s for exactly as long as Google says
     (parse_retry_delay_seconds) and retry, up to max_wait_seconds total, instead of
@@ -77,7 +81,15 @@ def compute_embedding_single(text: str, max_wait_seconds: float = 3600) -> tuple
     batch function's multi-model fallback - mixing embeddings from different models in
     the same cosine-similarity comparison would be meaningless (different models encode
     into different vector spaces), so every embedding in creative_embeddings/
-    intent_embeddings must come from the one consistent model."""
+    intent_embeddings must come from the one consistent model.
+
+    `on_hard_failure(message)`, if given, is called for any failure that ISN'T a quota
+    wait (model gone, 500, malformed response, giving-up-after-timeout) — the caller
+    (app/main.py) wires this to a Telegram alert (2026-10-23, Dima: "если получаем ошибку
+    от Gemini, к примеру модель перестала существовать или 500, нужно послать
+    уведомление в телеграм в тот же чат куда [алерты] прохождения капчи"). A quota wait
+    is normal/expected operation, not a failure worth paging anyone about, so it does
+    NOT trigger this callback."""
     text = (text or "").strip()
     if not text:
         return None
@@ -90,16 +102,25 @@ def compute_embedding_single(text: str, max_wait_seconds: float = 3600) -> tuple
             vectors = [list(e.values) for e in resp.embeddings]
             if len(vectors) == 1:
                 return vectors[0], model
-            print(f"[embeddings] {model} returned {len(vectors)} vectors for 1 text, giving up on this item", flush=True)
+            msg = f"{model} returned {len(vectors)} vectors for 1 text, giving up on this item"
+            print(f"[embeddings] {msg}", flush=True)
+            if on_hard_failure:
+                on_hard_failure(msg)
             return None
         except Exception as exc:  # noqa: BLE001 - deliberate: retry until success or timeout
             delay = parse_retry_delay_seconds(exc)
             if delay is None:
-                print(f"[embeddings] single-item call failed (non-quota): {exc}", flush=True)
+                msg = f"single-item call failed (non-quota): {exc}"
+                print(f"[embeddings] {msg}", flush=True)
+                if on_hard_failure:
+                    on_hard_failure(msg)
                 return None
             sleep_for = min(delay + 1, max_wait_seconds - waited)
             if sleep_for <= 0:
-                print(f"[embeddings] gave up after waiting {waited:.0f}s for quota", flush=True)
+                msg = f"gave up after waiting {waited:.0f}s for quota"
+                print(f"[embeddings] {msg}", flush=True)
+                if on_hard_failure:
+                    on_hard_failure(msg)
                 return None
             print(f"[embeddings] rate-limited, waiting {sleep_for:.0f}s before retrying", flush=True)
             time.sleep(sleep_for)

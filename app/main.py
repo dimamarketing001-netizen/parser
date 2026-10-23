@@ -254,6 +254,22 @@ def _creative_needs_semantic_check(db: sqlite3.Connection, creative_id: int, tit
     return True
 
 
+_last_gemini_alert_at = 0.0
+_GEMINI_ALERT_COOLDOWN_SECONDS = 1800  # avoid spamming Telegram if the same hard failure repeats every drain-loop tick
+
+
+def _gemini_alert(message: str) -> None:
+    """Wired as compute_embedding_single's on_hard_failure (2026-10-23, Dima's request) —
+    throttled so a persistent failure (e.g. a model genuinely removed) sends one Telegram
+    alert per cooldown window, not one per failed item."""
+    global _last_gemini_alert_at
+    now = time.monotonic()
+    if now - _last_gemini_alert_at < _GEMINI_ALERT_COOLDOWN_SECONDS:
+        return
+    _last_gemini_alert_at = now
+    notify_telegram_alert(f"⚠️ Ошибка Gemini embeddings (семантический интент): {message}")
+
+
 def _process_one_pending_embedding() -> bool:
     """One step of the background drain loop (_embedding_drain_loop): embeds exactly one
     missing intent (priority — rare, cheap, unblocks query-time matching fast) or one
@@ -271,7 +287,7 @@ def _process_one_pending_embedding() -> bool:
         ).fetchone()
         if intent_row:
             key_text = intent_row["key_text"]
-            result = emb.compute_embedding_single(key_text)
+            result = emb.compute_embedding_single(key_text, on_hard_failure=_gemini_alert)
             if result:
                 vector, model = result
                 db.execute(
@@ -301,7 +317,7 @@ def _process_one_pending_embedding() -> bool:
             return True
 
         text = emb.creative_embedding_text(row["title"], row["description"]) or "реклама"
-        result = emb.compute_embedding_single(text)
+        result = emb.compute_embedding_single(text, on_hard_failure=_gemini_alert)
         if result:
             vector, model = result
             db.execute(
@@ -1904,6 +1920,42 @@ def notify_telegram_captcha(job_id: int, url: str = "", title: str = "") -> bool
 
     print(f"[telegram] Уведомление о CAPTCHA отправлено (через relay) для запуска #{job_id}.", flush=True)
     return True
+
+
+def notify_telegram_alert(text: str) -> bool:
+    """Generic sibling of notify_telegram_captcha, same relay mechanism (WSL can't reach
+    api.telegram.org directly, the production server can) and same chat, for alerts that
+    aren't about a CAPTCHA — currently only wired to genuine (non-quota) Gemini embedding
+    failures (2026-10-23, Dima: "если получаем ошибку от Gemini, например модель
+    перестала существовать или 500, нужно послать уведомление в телеграм в тот же чат
+    куда [падает] прохождение капчи"). Best-effort: never raises, so a Telegram outage
+    can't also break whatever was already failing."""
+    relay_url = os.getenv("PARSYA_TELEGRAM_ALERT_RELAY_URL", "").strip()
+    if not relay_url:
+        captcha_relay = os.getenv("PARSYA_TELEGRAM_RELAY_URL", "").strip()
+        if captcha_relay.endswith("/telegram-captcha"):
+            relay_url = captcha_relay[: -len("/telegram-captcha")] + "/telegram-alert"
+    if not relay_url or not WORKER_TOKEN:
+        print("[telegram] PARSYA_TELEGRAM_ALERT_RELAY_URL/WORKER_TOKEN не задан — alert-relay отключён.", flush=True)
+        return False
+    try:
+        import urllib.request
+
+        request = urllib.request.Request(
+            relay_url,
+            data=json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {WORKER_TOKEN}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if not result.get("telegram_notified"):
+            raise RuntimeError(f"Relay не подтвердил отправку: {result}")
+        print("[telegram] Alert отправлен (через relay).", flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001 - best-effort notification, never raise
+        print(f"[telegram] Не удалось отправить alert: {exc}", flush=True)
+        return False
 
 
 @app.post("/api/worker/jobs/{job_id}/browser/state")
