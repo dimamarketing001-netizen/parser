@@ -9,12 +9,16 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import snowballstemmer
+
+from app import embeddings as emb
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -154,6 +158,181 @@ def _related_intents(anchor_texts: list[str], all_intents: list[str]) -> list[st
     return related
 
 
+# Below cosine similarity, a creative is considered off-topic for the active intent even
+# if it was captured by a matching job. Calibrated 2026-10-23 on real data: the 5 pension-
+# phrasing intents cluster at 0.77-0.87 with each other, "социальные выплаты" (a genuinely
+# related but differently-worded topic) sits at 0.64-0.68, and the real false-positive
+# that triggered this feature (a banquet-hall ad captured during a pension search) sits at
+# 0.54-0.56 — this threshold keeps the first two groups and excludes the third.
+SEMANTIC_INTENT_THRESHOLD = 0.62
+
+
+def _get_cached_intent_embedding(db: sqlite3.Connection, key_text: str) -> list[float] | None:
+    """Cache-only lookup, NEVER calls Gemini — this runs inside live request handling
+    (api_list_creatives), which must stay fast. Computing a missing embedding is the
+    background drain loop's job (_process_one_pending_embedding), not a query's."""
+    key = key_text.strip().lower()
+    if not key:
+        return None
+    row = db.execute("SELECT embedding FROM intent_embeddings WHERE key_text_lower=?", (key,)).fetchone()
+    return emb.unpack_embedding(row["embedding"]) if row else None
+
+
+def _semantic_relevant_creative_ids(db: sqlite3.Connection, intents: list[str]) -> set[int] | None:
+    """Creative ids considered relevant to the active intent(s) (averaged embedding if
+    several are selected), via TWO signals: (1) cosine similarity of a real Gemini
+    embedding ≥ SEMANTIC_INTENT_THRESHOLD, or (2) the creative's own title+description
+    literally stem-matches one of the active intents (catches obvious cases without
+    depending on an embedding being computed yet). Rows with skip_reason set (keyword-
+    matched its OWN capturing job, or a permanently failed embedding attempt — see
+    _process_one_pending_embedding) are excluded from the embedding-based check, since
+    their `embedding` column is a placeholder, not real data.
+    Returns None if no selected intent has a cached embedding at all (Gemini hasn't
+    gotten to it yet) — the caller falls back to job-based matching alone, see
+    _semantic_intent_where. Never fails the request for individual creatives lacking
+    an embedding; those are left for the job-based filter to decide."""
+    vectors = [v for v in (_get_cached_intent_embedding(db, t) for t in intents) if v is not None]
+    intent_stems: set[str] = set()
+    for t in intents:
+        intent_stems |= _intent_stems(t)
+    if not vectors and not intent_stems:
+        return None
+    dim = len(vectors[0]) if vectors else 0
+    avg = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)] if vectors else None
+    rows = db.execute(
+        "SELECT ce.creative_id, ce.embedding, c.title, c.description FROM creative_embeddings ce "
+        "JOIN creatives c ON c.id = ce.creative_id WHERE ce.skip_reason IS NULL"
+    ).fetchall()
+    if not rows and not vectors:
+        return None
+    matched: set[int] = set()
+    for row in rows:
+        if avg is not None and emb.cosine_similarity(avg, emb.unpack_embedding(row["embedding"])) >= SEMANTIC_INTENT_THRESHOLD:
+            matched.add(row["creative_id"])
+            continue
+        if intent_stems and (_intent_stems((row["title"] or "") + " " + (row["description"] or "")) & intent_stems):
+            matched.add(row["creative_id"])
+    return matched if vectors else (matched or None)
+
+
+def _semantic_intent_where(db: sqlite3.Connection, intents: list[str], creative_alias: str = "c") -> tuple[str, list[str]] | None:
+    """SQL WHERE fragment combining semantic relevance (primary) with job-based matching
+    (fallback, only for creatives with no USABLE embedding — i.e. none at all, or a
+    skip_reason placeholder) — see _semantic_relevant_creative_ids. Returns None when no
+    usable signal exists for any selected intent, so the caller falls back to
+    _intent_exists_sql alone. Uses a per-connection temp table instead of a huge
+    `IN (...)` param list to stay well under SQLite's bound-parameter limit."""
+    semantic_ids = _semantic_relevant_creative_ids(db, intents)
+    if semantic_ids is None:
+        return None
+    db.execute("CREATE TEMP TABLE IF NOT EXISTS semantic_match_ids (creative_id INTEGER PRIMARY KEY)")
+    db.execute("DELETE FROM temp.semantic_match_ids")
+    db.executemany("INSERT OR IGNORE INTO temp.semantic_match_ids(creative_id) VALUES(?)", [(i,) for i in semantic_ids])
+    job_sql = _intent_exists_sql(creative_alias, intents)
+    where = (
+        f"(EXISTS (SELECT 1 FROM temp.semantic_match_ids sm WHERE sm.creative_id={creative_alias}.id) "
+        f"OR (NOT EXISTS (SELECT 1 FROM creative_embeddings ce WHERE ce.creative_id={creative_alias}.id AND ce.skip_reason IS NULL) AND {job_sql}))"
+    )
+    return where, list(intents)
+
+
+def _creative_needs_semantic_check(db: sqlite3.Connection, creative_id: int, title: str | None, description: str | None) -> bool:
+    """False if this creative's own text already stem-matches ANY of its capturing jobs'
+    key_texts — job-based matching already correctly includes it for that same search
+    (the only intent it's confirmed relevant to so far), so there's no need to spend a
+    Gemini call on it. True (needs a real embedding) otherwise — this is exactly the
+    "false positive" pattern that triggered building semantic matching at all: a creative
+    captured under a search whose own text has nothing to do with that search's topic."""
+    text_stems = _intent_stems((title or "") + " " + (description or ""))
+    job_rows = db.execute(
+        "SELECT DISTINCT j.key_text FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE o.creative_id=?",
+        (creative_id,),
+    ).fetchall()
+    for row in job_rows:
+        if text_stems & _intent_stems(row["key_text"]):
+            return False
+    return True
+
+
+def _process_one_pending_embedding() -> bool:
+    """One step of the background drain loop (_embedding_drain_loop): embeds exactly one
+    missing intent (priority — rare, cheap, unblocks query-time matching fast) or one
+    creative (newest first — ORDER BY id DESC, so live scraping gets covered before the
+    historical backlog). Returns False only when there is genuinely nothing left to do
+    (caller should idle-poll), never on a Gemini failure — a failure still marks forward
+    progress (skip_reason='embedding_failed') so the loop can't get stuck retrying the
+    same item forever."""
+    with closing(connect()) as db:
+        intent_row = db.execute(
+            "SELECT MIN(j.key_text) AS key_text FROM jobs j "
+            "LEFT JOIN intent_embeddings ie ON ie.key_text_lower = PYLOWER(j.key_text) "
+            "WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> '' AND ie.key_text_lower IS NULL "
+            "GROUP BY PYLOWER(j.key_text) LIMIT 1"
+        ).fetchone()
+        if intent_row:
+            key_text = intent_row["key_text"]
+            result = emb.compute_embedding_single(key_text)
+            if result:
+                vector, model = result
+                db.execute(
+                    "INSERT INTO intent_embeddings(key_text_lower,display_text,embedding,model,computed_at) VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(key_text_lower) DO UPDATE SET embedding=excluded.embedding, model=excluded.model, computed_at=excluded.computed_at",
+                    (key_text.strip().lower(), key_text, emb.pack_embedding(vector), model, now_iso()),
+                )
+                db.commit()
+            return True
+
+        row = db.execute(
+            "SELECT c.id, c.title, c.description FROM creatives c "
+            "LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id "
+            "WHERE ce.creative_id IS NULL AND (COALESCE(c.title,'')<>'' OR COALESCE(c.description,'')<>'') "
+            "ORDER BY c.id DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return False
+
+        now = now_iso()
+        if not _creative_needs_semantic_check(db, row["id"], row["title"], row["description"]):
+            db.execute(
+                "INSERT INTO creative_embeddings(creative_id,embedding,model,computed_at,skip_reason) VALUES(?,?,?,?,?)",
+                (row["id"], b"", "none", now, "keyword_match"),
+            )
+            db.commit()
+            return True
+
+        text = emb.creative_embedding_text(row["title"], row["description"]) or "реклама"
+        result = emb.compute_embedding_single(text)
+        if result:
+            vector, model = result
+            db.execute(
+                "INSERT INTO creative_embeddings(creative_id,embedding,model,computed_at) VALUES(?,?,?,?)",
+                (row["id"], emb.pack_embedding(vector), model, now),
+            )
+        else:
+            db.execute(
+                "INSERT INTO creative_embeddings(creative_id,embedding,model,computed_at,skip_reason) VALUES(?,?,?,?,?)",
+                (row["id"], b"", "none", now, "embedding_failed"),
+            )
+        db.commit()
+        return True
+
+
+def _embedding_drain_loop() -> None:
+    """Runs forever in a background thread (started at app startup, see
+    _start_embedding_drain_thread) — the production ingestion path (2026-10-23, Dima's
+    design): one creative/intent at a time, no batching, so a single rate-limit wait only
+    delays the next item, never a whole batch. compute_embedding_single already waits out
+    429s internally, so a quota exhaustion just makes this loop naturally slow down, not
+    fail — no manual pacing/backoff tuning needed here."""
+    while True:
+        try:
+            did_work = _process_one_pending_embedding()
+        except Exception as exc:  # noqa: BLE001 - a background loop must never die
+            print(f"[embeddings] drain loop error: {exc}", flush=True)
+            did_work = False
+        time.sleep(0.5 if did_work else 30)
+
+
 def init_db() -> None:
     with closing(connect()) as db:
         db.execute("PRAGMA journal_mode=WAL")
@@ -281,6 +460,28 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_creative_utm_campaign ON creative_utm(utm_campaign);
         CREATE INDEX IF NOT EXISTS ix_creative_utm_term ON creative_utm(utm_term);
+
+        -- Semantic intent matching (2026-10-23): a creative can be captured under a search
+        -- job ("Увеличение пенсии") whose own ad text has nothing to do with that search —
+        -- RSYA targets audiences, not page content, so job-based intent scoping alone lets
+        -- through unrelated ads (confirmed real example: a banquet-hall ad captured during
+        -- a pension search). These tables cache Gemini embeddings (gemini-embedding-001,
+        -- see embeddings.py) so creative-vs-intent *content* relevance can be computed
+        -- without a live API call on every request. embedding is a packed float32 BLOB.
+        CREATE TABLE IF NOT EXISTS creative_embeddings (
+          creative_id INTEGER PRIMARY KEY,
+          embedding BLOB NOT NULL,
+          model TEXT NOT NULL,
+          computed_at TEXT NOT NULL,
+          FOREIGN KEY(creative_id) REFERENCES creatives(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS intent_embeddings (
+          key_text_lower TEXT PRIMARY KEY,
+          display_text TEXT NOT NULL,
+          embedding BLOB NOT NULL,
+          model TEXT NOT NULL,
+          computed_at TEXT NOT NULL
+        );
 
         -- Advertiser-disclosure coverage %, grouped by platform/detection_method/creative_type.
         -- Mirrors MySQL's parsya_advertiser_coverage_report VIEW (global aggregate, not
@@ -457,6 +658,17 @@ def init_db() -> None:
         if "owner_user_id" not in job_cols:
             db.execute("ALTER TABLE jobs ADD COLUMN owner_user_id INTEGER REFERENCES users(id)")
         db.execute("CREATE INDEX IF NOT EXISTS ix_jobs_owner ON jobs(owner_user_id)")
+        # skip_reason (2026-10-23): a creative whose own capturing job's key_text already
+        # keyword/stem-matches its title+description doesn't need a real Gemini embedding —
+        # job-based matching already correctly includes it for that same search, and that's
+        # the only intent it's confirmed relevant to anyway. Such rows get embedding=b''
+        # (placeholder, keeps the NOT NULL constraint) and skip_reason set, so the drain
+        # loop (_process_one_pending_embedding) never re-considers them, while query-time
+        # code (_semantic_relevant_creative_ids) treats skip_reason-marked rows as "no real
+        # embedding" and falls back to job-based matching alone for them.
+        ce_cols = {row["name"] for row in db.execute("PRAGMA table_info(creative_embeddings)").fetchall()}
+        if "skip_reason" not in ce_cols:
+            db.execute("ALTER TABLE creative_embeddings ADD COLUMN skip_reason TEXT")
         # landing_domain_mismatch (2026-10-22): the advertiser's OWN declared site domain
         # (from the resolved Yandex/VK advertiser profile) vs. the domain the ad actually
         # lands on — a real divergence signal (e.g. renting someone else's landing page, an
@@ -482,6 +694,7 @@ def init_db() -> None:
 
 
 init_db()
+threading.Thread(target=_embedding_drain_loop, daemon=True, name="embedding-drain").start()
 
 
 def esc(value: Any) -> str:
@@ -1997,8 +2210,14 @@ def api_list_creatives(
         params: list[Any] = []
         intents = _parse_intents(intent)
         if intents:
-            where_parts.append(_intent_exists_sql("c", intents))
-            params.extend(intents)
+            combined = _semantic_intent_where(db, intents)
+            if combined:
+                where_sql, extra_params = combined
+                where_parts.append(where_sql)
+                params.extend(extra_params)
+            else:
+                where_parts.append(_intent_exists_sql("c", intents))
+                params.extend(intents)
         if inn:
             joins.append("JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id")
             where_parts.append("a.inn=?")
@@ -2589,3 +2808,34 @@ def admin_status(request: Request):
             "creatives": db.execute("SELECT COUNT(*) FROM creatives").fetchone()[0],
             "occurrences": db.execute("SELECT COUNT(*) FROM occurrences").fetchone()[0],
         }
+
+
+@app.get("/api/admin/embeddings-status")
+def admin_embeddings_status(request: Request):
+    """Read-only progress check for the background embedding drain loop
+    (_embedding_drain_loop, started at process startup — see init_db()'s call site).
+    2026-10-23: this replaced a manually-triggered batch endpoint — embeddings are now
+    computed continuously, one item at a time, in the background; nothing to trigger."""
+    if not auth_page(request):
+        raise HTTPException(status_code=401)
+    with closing(connect()) as db:
+        remaining_intents = db.execute(
+            "SELECT COUNT(DISTINCT PYLOWER(j.key_text)) FROM jobs j "
+            "LEFT JOIN intent_embeddings ie ON ie.key_text_lower = PYLOWER(j.key_text) "
+            "WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> '' AND ie.key_text_lower IS NULL"
+        ).fetchone()[0]
+        remaining_creatives = db.execute(
+            "SELECT COUNT(*) FROM creatives c LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id "
+            "WHERE ce.creative_id IS NULL AND (COALESCE(c.title,'')<>'' OR COALESCE(c.description,'')<>'')"
+        ).fetchone()[0]
+        done_intents = db.execute("SELECT COUNT(*) FROM intent_embeddings").fetchone()[0]
+        done_creatives_real = db.execute("SELECT COUNT(*) FROM creative_embeddings WHERE skip_reason IS NULL").fetchone()[0]
+        done_creatives_skipped = db.execute(
+            "SELECT skip_reason, COUNT(*) n FROM creative_embeddings WHERE skip_reason IS NOT NULL GROUP BY skip_reason"
+        ).fetchall()
+    return {
+        "intents_done": done_intents, "intents_remaining": remaining_intents,
+        "creatives_with_real_embedding": done_creatives_real,
+        "creatives_skipped": {r["skip_reason"]: r["n"] for r in done_creatives_skipped},
+        "creatives_remaining": remaining_creatives,
+    }
