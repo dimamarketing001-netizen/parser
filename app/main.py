@@ -45,6 +45,119 @@ SECRET_KEY = os.getenv("PARSYA_SECRET_KEY", "")
 COOKIE_SECURE = os.getenv("PARSYA_COOKIE_SECURE", "1").strip().lower() in {"1", "true", "yes"}
 MAX_HTML_CHARS = 2_000_000
 
+# 2026-11-03: design tokens + base components, matching the client-facing
+# "NEON / Ad Intelligence" SaaS frontend (saas-frontend repo,
+# /app/ad-intelligence.html) — Dima wants one consistent look across the
+# client app, this admin, and addAvto. Starting point: this admin's shell
+# (sidebar/topbar/headline) and the Обзор (dashboard) page specifically,
+# per his explicit ordering ("design-токены + одна страница админки").
+# Plain string, NOT an f-string — every existing body-builder below still
+# emits literal class names (.panel/.metric/.btn/table/.badge/...), so
+# this re-skins those classes' CSS rather than renaming them, keeping
+# every other already-written page working unmodified.
+DESIGN_TOKENS_CSS = """
+:root{--bg:#f7f7fb;--panel:#fff;--ink:#20212a;--muted:#9294a3;--line:#ececf3;--green:#39ff88;--green-dark:#20a66a;--violet:#8c72f6;--nav:#fff;--nav-muted:#777b8d;--red:#c0392b;--amber:#c18b3e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"DM Sans",ui-sans-serif,system-ui,sans-serif;font-size:13px;letter-spacing:-.012em}
+a{color:var(--violet);text-decoration:none}a:hover{text-decoration:underline}
+button,input,select,textarea{font:inherit}
+.shell{min-height:100vh;display:grid;grid-template-columns:258px minmax(0,1fr)}
+aside.sidebar{background:#fff;color:#292a36;padding:27px 17px 20px;border-right:1px solid #eeeef4;display:flex;flex-direction:column;gap:10px}
+.brand{display:flex;align-items:center;gap:12px;padding:0 11px 22px}
+.brand-mark{width:39px;height:39px;border-radius:14px;background:#24242f;color:var(--green);display:grid;place-items:center;font-size:19px;font-weight:800;box-shadow:0 5px 12px #25253216}
+.brand b{display:block;font-size:15px;letter-spacing:.13em;color:#242530}
+.brand small{display:block;color:#9b9dac;letter-spacing:.14em;font-size:8px;margin-top:3px}
+nav{display:grid;gap:6px}
+nav a{color:#777b8c;border-radius:12px;padding:12px 13px;display:flex;align-items:center;gap:11px;font-size:12px;transition:background .18s,color .18s}
+nav a svg{width:16px;height:16px;flex-shrink:0}
+nav a:hover{background:#f7f6fc;color:#363448}
+nav a.active{background:#f0edff;color:#7057dd;font-weight:700}
+nav a.nav-back{color:#9a9baa;margin-bottom:6px;padding-bottom:17px;border-bottom:1px solid #f0f0f5;border-radius:0}
+nav a.nav-back:hover{background:transparent;color:#363448}
+.side-bottom{margin-top:auto;border-top:1px solid #f0f0f5;padding-top:16px;color:#9a9baa;font-size:11px;display:flex;align-items:center;gap:10px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green-dark);flex-shrink:0}
+.logout{margin-left:auto;background:#f7f6fc;border:1px solid #ececf3;color:#6c6f80;padding:7px 11px;border-radius:9px;cursor:pointer;font-size:10px;font-weight:700}
+.logout:hover{border-color:#d4cdf8;color:#7057dd}
+main.main{min-width:0}
+.topbar{height:72px;background:#f7f7fb;border-bottom:1px solid #eeeef4;display:flex;align-items:center;justify-content:space-between;padding:0 34px;gap:15px}
+.crumb{font-size:11px;color:#a0a1af}.crumb strong{color:#373746;font-weight:700}
+.top-actions{display:flex;align-items:center;gap:10px}
+.profiledot{width:36px;height:36px;border-radius:12px;background:#282735;color:var(--green);display:grid;place-items:center;font-weight:800;border:3px solid #fff;box-shadow:0 0 0 1px #e9e8f0}
+.content{max-width:1500px;padding:32px 34px 48px;margin:0 auto}
+.headline{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:27px}
+.eyebrow{font-size:9px;color:#7158dc;font-weight:800;letter-spacing:.16em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.eyebrow:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px #39ff8825}
+.h1{font:800 clamp(22px,3vw,30px)/1.2 Manrope,sans-serif;letter-spacing:-.045em;margin:10px 0 7px;color:#22232e}
+.subtitle{font-size:12px;color:var(--muted);line-height:1.65;max-width:620px}
+.primary,.secondary,.btn{border-radius:12px;padding:11px 15px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:700;font-size:11px;white-space:nowrap;border:1px solid transparent;cursor:pointer;transition:transform .15s,box-shadow .15s,background .15s}
+.primary,.btn{background:#272633;color:#fff;border-color:#272633;box-shadow:0 6px 14px #25243514}
+.primary:hover,.btn:hover{background:#3a384b;transform:translateY(-1px);text-decoration:none}
+.secondary,.btn.secondary{background:#fff;border-color:var(--line);color:#626477}
+.secondary:hover,.btn.secondary:hover{border-color:#d4cdf8;background:#fbfaff;text-decoration:none}
+.btn.danger{background:#fdecea;border-color:#f5c2bd;color:var(--red)}
+h2{font:800 15px Manrope,sans-serif;margin:0 0 15px;letter-spacing:-.025em;color:#272733}
+.muted{color:var(--muted)}
+.summary,.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:25px}
+.metric,.stat{padding:21px 22px;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 5px 20px #2b294a04;min-width:0}
+.metric .label,.stathead{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#858799;font-size:11px}
+.metric .value,.statvalue{font:800 27px Manrope,sans-serif;letter-spacing:-.045em;margin:14px 0 6px;color:#242431}
+.metric .hint,.statfoot{font-size:10px;color:#9a9baa}
+.staticon{width:36px;height:36px;border-radius:12px;background:#e9faef;color:var(--green-dark);display:grid;place-items:center;flex-shrink:0}
+.staticon svg{width:16px;height:16px}
+.staticon.violet{background:#f0edff;color:#8066e8}.staticon.gray{background:#f2f2f7;color:#73758b}.staticon.amber{background:#fff5e7;color:var(--amber)}
+.panel,.card{background:#fff;border:1px solid var(--line);border-radius:19px;box-shadow:0 5px 20px #2b294a04}
+.panel{padding:22px;margin-bottom:20px}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}
+.table-wrap{overflow:auto}
+table{width:100%;border-collapse:collapse;white-space:nowrap}
+th{color:#9a9baa;font-size:10px;text-align:left;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:10px;border-bottom:1px solid var(--line)}
+td{padding:13px 10px;border-bottom:1px solid #f1f1f6;vertical-align:middle;color:#45465a}
+tr:last-child td{border-bottom:0}
+.badge,.status{display:inline-flex;align-items:center;gap:6px;border-radius:9px;padding:6px 9px;font-size:10px;font-weight:700;background:#f2f2f7;color:#5c5e70}
+.badge:before,.status:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ok,.badge.completed,.status.completed{background:#eaf8ef;color:var(--green-dark)}
+.badge.running,.status.running{background:#eaf3ff;color:#2868b2}
+.badge.failed,.badge.error,.status.failed{background:#fdecea;color:var(--red)}
+.badge.queued,.status.queued{background:#f0edff;color:#7158dc}
+.formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+label{display:block;color:#596371;font-size:11px;font-weight:700;margin-bottom:8px}
+input,select,textarea{width:100%;background:#fff;border:1px solid var(--line);color:var(--ink);padding:12px 13px;border-radius:12px;outline:none;transition:border-color .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--violet)}
+.field{margin-bottom:16px}
+.help{font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6}
+.empty{padding:36px;text-align:center;color:var(--muted);border:1px dashed #dfe2e9;border-radius:16px;background:#fff}
+.filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.filters input,.filters select{width:auto;min-width:170px}
+.creative-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.creative{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 5px 20px #2b294a04;transition:transform .2s,box-shadow .2s}
+.creative:hover{transform:translateY(-3px);box-shadow:0 16px 34px #2a284511}
+.creative-preview{height:195px;background:#f0eff8;color:#172235;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.creative-preview iframe{width:100%;height:100%;border:0;background:white}
+.creative-preview img{max-width:100%;max-height:100%;object-fit:contain}
+.creative-info{padding:17px 18px}
+.creative-info h3{font-size:13px;line-height:1.4;margin:0 0 8px;overflow-wrap:anywhere;color:#272733}
+.creative-meta{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+.log{max-height:600px;overflow:auto;background:#191a24;color:#d9e3f7;padding:15px;border-radius:12px;border:1px solid var(--line)}
+.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+.html-frame{width:100%;height:650px;border:1px solid var(--line);background:white;border-radius:12px}
+.notice{border:1px solid #e8e4fa;background:#f8f6ff;border-radius:14px;padding:13px 15px;color:#6751a9;margin-bottom:16px;font-size:11px;line-height:1.7}
+.error-text{color:var(--red)}
+.right{text-align:right}
+.footnote{font-size:11px;color:var(--muted);margin-top:16px}
+.joblist{display:flex;flex-direction:column;gap:11px}
+.job{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(90px,.6fr) minmax(90px,.6fr) auto;gap:14px;align-items:center;padding:16px 18px;background:#fff;border:1px solid var(--line);border-radius:15px;box-shadow:0 4px 18px #28274204}
+.jobname{display:flex;align-items:center;gap:11px;min-width:0}
+.jobicon{width:36px;height:36px;display:grid;place-items:center;border-radius:12px;background:#f0edfd;color:#8065d8;flex-shrink:0}
+.jobicon svg{width:16px;height:16px}
+.jobname strong{display:block;font-size:12px;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jobname span,.jobmeta span{font-size:10px;color:#8b94a0}
+.jobmeta strong{display:block;font-size:11px;margin-bottom:3px}
+@media(max-width:1050px){.summary,.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.creative-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.job{grid-template-columns:minmax(0,1fr) auto}.jobmeta{display:none}}
+@media(max-width:720px){.shell{grid-template-columns:1fr}aside.sidebar{display:none!important}.topbar{padding:0 18px}.content{padding:22px 16px 35px}.headline{flex-direction:column;align-items:stretch}.summary,.grid{gap:9px}.metric,.stat{padding:15px}.metric .value,.statvalue{font-size:22px}.creative-grid,.formgrid,.detail-grid{grid-template-columns:1fr}.h1{font-size:22px}.job{grid-template-columns:1fr;gap:10px}}
+"""
+
+
 if not ADMIN_PASSWORD:
     raise RuntimeError("PARSYA_ADMIN_PASSWORD must be set in the environment.")
 if len(SECRET_KEY) < 32:
@@ -800,11 +913,11 @@ def page(request: Request, title: str, body: str, active: str = "") -> HTMLRespo
     nav = ""
     if auth_page(request):
         links = [
-            ("/dashboard", "Обзор", "dashboard"),
-            ("/runs", "Запуски", "runs"),
-            ("/creatives", "Креативы", "creatives"),
-            ("/new-run", "Новый запуск", "new-run"),
-            ("/admin/users", "Пользователи SaaS", "users"),
+            ("/dashboard", "Обзор", "dashboard", "layout-grid"),
+            ("/runs", "Запуски", "runs", "radar"),
+            ("/creatives", "Креативы", "creatives", "layers"),
+            ("/new-run", "Новый запуск", "new-run", "plus"),
+            ("/admin/users", "Пользователи SaaS", "users", "users"),
         ]
         nav = '<aside class="sidebar"><div class="brand"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><nav>'
         # Открыто как вкладка внутри addAvto (/parser/...) — явная ссылка
@@ -813,17 +926,22 @@ def page(request: Request, title: str, body: str, active: str = "") -> HTMLRespo
         if P():
             nav += '<a class="nav-back" href="/">← Рекламные кампании</a>'
         nav += "".join(
-            f'<a class="{ "active" if key == active else "" }" href="{P(href)}">{label}</a>'
-            for href, label, key in links
+            f'<a class="{ "active" if key == active else "" }" href="{P(href)}"><i data-lucide="{icon}"></i>{label}</a>'
+            for href, label, key, icon in links
         )
-        nav += '</nav><div class="side-bottom"><span class="dot"></span> Панель управления<br><small>Пользователь: ' + esc(user) + '</small><form method="post" action="' + P("/logout") + '"><input type="hidden" name="csrf_token" value="' + esc(csrf_token(request)) + '"><button class="logout">Выйти</button></form></div></aside>'
+        nav += '</nav><div class="side-bottom"><span class="dot"></span> ' + esc(user) + '<form method="post" action="' + P("/logout") + '"><input type="hidden" name="csrf_token" value="' + esc(csrf_token(request)) + '"><button class="logout">Выйти</button></form></div></aside>'
+    crumb_label = next((label for _, label, key in [("", "Обзор", "dashboard"), ("", "Запуски", "runs"), ("", "Креативы", "creatives"), ("", "Новый запуск", "new-run"), ("", "Пользователи SaaS", "users")] if key == active), title)
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} · ParsYa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest"></script>
 <style>
-:root{{--bg:#0b1220;--panel:#111c2e;--panel2:#16243a;--line:#263750;--text:#e8eef8;--muted:#96a8c0;--blue:#64a5ff;--green:#48d6a0;--amber:#ffcb70;--red:#ff7c88}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}}a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}button,input,select,textarea{{font:inherit}}.app{{display:flex;min-height:100vh}}.sidebar{{width:238px;flex:0 0 238px;padding:24px 16px;background:#0d1728;border-right:1px solid var(--line);display:flex;flex-direction:column}}.brand{{display:flex;align-items:center;gap:11px;padding:4px 10px 30px}}.brand-mark{{height:38px;width:38px;border-radius:12px;background:linear-gradient(135deg,#5eb1ff,#7169ff);display:grid;place-items:center;font-size:22px;font-weight:800;color:#061020}}.brand b{{display:block;font-size:17px;letter-spacing:.3px}}.brand small{{display:block;color:var(--muted);font-size:9px;letter-spacing:1.6px}}nav{{display:grid;gap:7px}}nav a{{padding:11px 12px;border-radius:9px;color:#a9bad0}}nav a.active,nav a:hover{{background:#1a2a43;color:#fff;text-decoration:none}}nav a.nav-back{{color:var(--muted);margin-bottom:6px;padding-bottom:13px;border-bottom:1px solid var(--line)}}nav a.nav-back:hover{{background:transparent;color:var(--text)}}.side-bottom{{margin-top:auto;color:var(--muted);font-size:12px;padding:18px 10px 0}}.dot{{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}}.logout{{margin-top:12px;background:none;border:1px solid var(--line);color:var(--muted);padding:7px 12px;border-radius:8px;cursor:pointer}}main{{flex:1;min-width:0;padding:30px clamp(18px,3vw,44px);max-width:1700px}}.topline{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:24px}}h1{{margin:0;font-size:26px;letter-spacing:-.5px}}h2{{font-size:16px;margin:0 0 16px}}.muted{{color:var(--muted)}}.grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:24px}}.metric,.panel,.card{{background:var(--panel);border:1px solid var(--line);border-radius:14px}}.metric{{padding:19px}}.metric .label{{color:var(--muted);font-size:12px}}.metric .value{{font-size:29px;font-weight:750;margin-top:7px;letter-spacing:-.5px}}.metric .hint{{font-size:11px;color:var(--muted);margin-top:2px}}.panel{{padding:21px;margin-bottom:20px}}.panel-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:15px}}.btn{{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:#5d9eff;color:#071326;border:0;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer}}.btn:hover{{background:#83b6ff;text-decoration:none}}.btn.secondary{{background:#1c2c44;color:var(--text);border:1px solid var(--line)}}.btn.danger{{background:#442333;color:#ffb9c0}}.table-wrap{{overflow:auto}}table{{width:100%;border-collapse:collapse;white-space:nowrap}}th{{color:var(--muted);font-size:11px;text-align:left;font-weight:600;padding:10px;border-bottom:1px solid var(--line)}}td{{padding:12px 10px;border-bottom:1px solid #202e43;vertical-align:middle}}tr:last-child td{{border-bottom:0}}.badge{{display:inline-flex;border-radius:99px;padding:4px 8px;font-size:11px;background:#26354c;color:#c5d7ef}}.badge.ok,.badge.completed{{background:#133a37;color:#73e5bc}}.badge.running{{background:#3e321a;color:#ffce7c}}.badge.failed,.badge.error{{background:#44232c;color:#ffadb5}}.badge.queued{{background:#25314a;color:#a9c8ff}}.formgrid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}}label{{display:block;color:#b3c4d9;font-size:12px;margin-bottom:7px}}input,select,textarea{{width:100%;background:#0b1525;border:1px solid #30425d;color:var(--text);padding:11px 12px;border-radius:9px;outline:none}}input:focus,select:focus,textarea:focus{{border-color:var(--blue)}}.field{{margin-bottom:16px}}.help{{font-size:12px;color:var(--muted);margin-top:6px}}.empty{{padding:32px;text-align:center;color:var(--muted)}}.filters{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}}.filters input,.filters select{{width:auto;min-width:170px}}.creative-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}}.creative{{overflow:hidden}}.creative-preview{{height:195px;background:#e8edf3;color:#172235;overflow:hidden;display:flex;align-items:center;justify-content:center}}.creative-preview iframe{{width:100%;height:100%;border:0;background:white}}.creative-preview img{{max-width:100%;max-height:100%;object-fit:contain}}.creative-info{{padding:15px}}.creative-info h3{{font-size:14px;line-height:1.4;margin:0 0 8px;overflow-wrap:anywhere}}.creative-meta{{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0}}.mono{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}}.log{{max-height:600px;overflow:auto;background:#07101d;padding:15px;border-radius:10px;border:1px solid var(--line);color:#bdd0e6}}.detail-grid{{display:grid;grid-template-columns: minmax(0,1fr) minmax(0,1fr);gap:18px}}.html-frame{{width:100%;height:650px;border:1px solid var(--line);background:white;border-radius:10px}}.notice{{border:1px solid #33445d;background:#142139;border-radius:10px;padding:12px 14px;color:#b8cbe2;margin-bottom:16px}}.error-text{{color:#ff9fa8}}.right{{text-align:right}}.footnote{{font-size:11px;color:var(--muted);margin-top:15px}}@media(max-width:1050px){{.grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}.creative-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}@media(max-width:720px){{.app{{display:block}}.sidebar{{width:100%;padding:12px;display:block;border-right:0;border-bottom:1px solid var(--line)}}.brand{{padding:4px 6px 12px}}nav{{display:flex;overflow:auto}}nav a{{white-space:nowrap;padding:8px}}.side-bottom{{display:none}}main{{padding:22px 14px}}.grid{{gap:8px}}.metric{{padding:13px}}.metric .value{{font-size:23px}}.creative-grid,.formgrid,.detail-grid{{grid-template-columns:1fr}}h1{{font-size:22px}}.topline{{align-items:flex-start}}}}
-</style></head><body><div class="app">{nav}<main><div class="topline"><div><h1>{esc(title)}</h1><div class="muted">Удалённое управление ParsYa · воркер подключается к серверу исходящим HTTPS</div></div>{'<a class="btn" href="' + P('/new-run') + '">＋ Новый запуск</a>' if auth_page(request) and active != 'new-run' else ''}</div>{body}<div class="footnote">ParsYa Control Plane · HTML креативов отображается в изолированном iframe без выполнения скриптов.</div></main></div></body></html>"""
+{DESIGN_TOKENS_CSS}
+</style></head><body><div class="shell">{nav}<main class="main"><header class="topbar"><div style="display:flex;align-items:center;gap:12px"><div class="crumb">ParsYa <span style="margin:0 7px;color:#c5cad1">/</span><strong>{esc(crumb_label)}</strong></div></div><div class="top-actions"><div class="profiledot">{esc((user or "A")[0].upper())}</div></div></header><div class="content"><section class="headline"><div><div class="eyebrow">CONTROL PLANE</div><h1 class="h1">{esc(title)}</h1><div class="subtitle">Удалённое управление ParsYa · воркер подключается к серверу исходящим HTTPS</div></div>{'<a class="primary" href="' + P('/new-run') + '"><i data-lucide="plus"></i><span>Новый запуск</span></a>' if auth_page(request) and active != 'new-run' else ''}</section>{body}<div class="footnote">ParsYa Control Plane · HTML креативов отображается в изолированном iframe без выполнения скриптов.</div></div></main></div>
+<script>if(window.lucide)lucide.createIcons();</script>
+</body></html>"""
     return HTMLResponse(html)
 
 
@@ -1229,11 +1347,25 @@ def dashboard(request: Request):
         top_sites = db.execute("SELECT platform,COUNT(*) n FROM occurrences GROUP BY platform ORDER BY n DESC LIMIT 8").fetchall()
     def badge(status: str) -> str:
         return f'<span class="badge {esc(status)}">{esc(status)}</span>'
-    rows = "".join(f'<tr><td><a href="{P("/runs/")}{r["id"]}">#{r["id"]}</a></td><td>{esc(r["city"])}</td><td>{esc(r["key_text"])}</td><td>{badge(r["status"])}</td><td>{esc(r["created_at"])}</td><td>{r["total_creatives"]}</td></tr>' for r in recent) or '<tr><td colspan="6" class="empty">Запусков пока нет. Создайте первый запуск.</td></tr>'
+    def job_icon(status: str) -> str:
+        lucide_name = {"running": "loader-circle", "queued": "clock", "failed": "circle-x"}.get(status, "circle-check")
+        return f'<span class="jobicon"><i data-lucide="{lucide_name}"></i></span>'
+    job_cards = "".join(
+        f'<div class="job"><div class="jobname">{job_icon(r["status"])}<div><strong>#{r["id"]} · {esc(r["key_text"])}</strong><span>{esc(r["city"])} · {esc(r["created_at"])}</span></div></div>'
+        f'<div class="jobmeta"><strong>{r["total_creatives"]}</strong><span>креативов</span></div>'
+        f'<div>{badge(r["status"])}</div>'
+        f'<a class="secondary" href="{P("/runs/")}{r["id"]}">Подробнее</a></div>'
+        for r in recent
+    ) or '<div class="empty"><strong>Запусков пока нет.</strong> Создайте первый запуск.</div>'
     workers = "".join(f'<tr><td>{esc(w["worker_id"])}</td><td>{esc(w["hostname"])}</td><td>{badge(w["state"])}</td><td>{esc(w["last_seen"])}</td><td>{("#"+str(w["current_job_id"])) if w["current_job_id"] else "—"}</td></tr>' for w in worker_rows) or '<tr><td colspan="5" class="empty">Воркер ещё не подключался</td></tr>'
     sites = "".join(f'<tr><td>{esc(s["platform"])}</td><td>{s["n"]}</td></tr>' for s in top_sites) or '<tr><td colspan="2" class="empty">Данные появятся после синхронизации</td></tr>'
-    body = f"""<div class="grid"><div class="metric"><div class="label">Всего запусков</div><div class="value">{jobs}</div><div class="hint">За всё время</div></div><div class="metric"><div class="label">В очереди / выполняются</div><div class="value">{active}</div><div class="hint">Незавершённые задания</div></div><div class="metric"><div class="label">Уникальные креативы</div><div class="value">{creatives}</div><div class="hint">С сохранённым HTML при наличии</div></div><div class="metric"><div class="label">Обнаружения</div><div class="value">{occurrences}</div><div class="hint">С учётом повторов в разных запусках</div></div></div>
-<div class="panel"><div class="panel-head"><h2>Последние запуски</h2><a href="{P("/runs")}">Все запуски →</a></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Город</th><th>Запрос</th><th>Статус</th><th>Создан</th><th>Креативы</th></tr></thead><tbody>{rows}</tbody></table></div></div>
+    body = f"""<div class="summary">
+<article class="stat"><div class="stathead">Всего запусков <span class="staticon"><i data-lucide="radar"></i></span></div><div class="statvalue">{jobs}</div><div class="statfoot">За всё время</div></article>
+<article class="stat"><div class="stathead">В очереди / выполняются <span class="staticon violet"><i data-lucide="loader-circle"></i></span></div><div class="statvalue">{active}</div><div class="statfoot">Незавершённые задания</div></article>
+<article class="stat"><div class="stathead">Уникальные креативы <span class="staticon gray"><i data-lucide="layers"></i></span></div><div class="statvalue">{creatives}</div><div class="statfoot">С сохранённым HTML при наличии</div></article>
+<article class="stat"><div class="stathead">Обнаружения <span class="staticon amber"><i data-lucide="scan-search"></i></span></div><div class="statvalue">{occurrences}</div><div class="statfoot">С учётом повторов в разных запусках</div></article>
+</div>
+<div class="panel"><div class="panel-head"><h2>Последние запуски</h2><a href="{P("/runs")}">Все запуски →</a></div><div class="joblist">{job_cards}</div></div>
 <div class="detail-grid"><div class="panel"><div class="panel-head"><h2>Состояние WSL-воркера</h2></div><div class="table-wrap"><table><thead><tr><th>Worker ID</th><th>Узел</th><th>Статус</th><th>Последний сигнал</th><th>Задание</th></tr></thead><tbody>{workers}</tbody></table></div></div><div class="panel"><div class="panel-head"><h2>Площадки по обнаружениям</h2><a href="{P("/creatives")}">Креативы →</a></div><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div></div>
 <div class="notice">Сервер не подключается к WSL напрямую. WSL-воркер сам опрашивает эту панель по HTTPS и забирает задания.</div>"""
     return page(request, "Обзор", body, "dashboard")
