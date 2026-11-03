@@ -990,6 +990,7 @@ def page(request: Request, title: str, body: str, active: str = "") -> HTMLRespo
             ("/dashboard", "Обзор", "dashboard", "layout-grid"),
             ("/runs", "Запуски", "runs", "radar"),
             ("/creatives", "Креативы", "creatives", "layers"),
+            ("/advertisers", "Рекламодатели", "advertisers", "building-2"),
             ("/new-run", "Новый запуск", "new-run", "plus"),
             ("/admin/users", "Пользователи SaaS", "users", "users"),
         ]
@@ -1570,6 +1571,50 @@ def run_detail(request: Request, job_id: int):
 {browser_panel}
 <div class="detail-grid"><div class="panel"><h2>Детали задания</h2><table><tbody><tr><th>Ключевой запрос</th><td>{esc(job["key_text"])}</td></tr><tr><th>Создан</th><td>{esc(job["created_at"])}</td></tr><tr><th>Начат</th><td>{esc(job["started_at"] or "—")}</td></tr><tr><th>Завершён</th><td>{esc(job["finished_at"] or "—")}</td></tr><tr><th>Ошибка</th><td class="error-text">{esc(job["error_text"] or "—")}</td></tr></tbody></table><h2 style="margin-top:22px">Результаты сканирования площадок</h2><div class="table-wrap"><table><thead><tr><th>Площадка</th><th>Статус</th><th>Креативы</th><th>Сигнал рекламы</th><th>Время, сек.</th><th>Ошибка</th></tr></thead><tbody>{scan_rows}</tbody></table></div><h2 style="margin-top:22px">Обнаружения по рекламным площадкам</h2><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div><div class="panel"><div class="panel-head"><h2>Лог воркера</h2><button class="btn secondary" onclick="location.reload()">Обновить</button></div><div class="log mono">{esc(job["log_text"] or "Ожидание подключения воркера…")}</div></div></div><div class="panel"><h2>Результат</h2><pre class="log mono">{result}</pre></div>"""
     return page(request, f"Запуск #{job_id}", body, "runs")
+
+
+@app.get("/advertisers", response_class=HTMLResponse)
+def advertisers_page(request: Request, q: str = ""):
+    """Рекламодатели, распознанные по ИНН/названию и привязанные к
+    креативам (advertisers/creative_advertiser_links — те же таблицы,
+    что уже питают /api/v1/creatives?inn=...). Реальные данные, не демо —
+    единственная из вкладок референса, для которой в проекте уже готов
+    бэкенд (2026-11-03, фаза 4)."""
+    redirect = admin_or_redirect(request)
+    if redirect:
+        return redirect
+    where_sql, params = "", []
+    if q.strip():
+        like = "%" + q.strip()[:150] + "%"
+        where_sql = "WHERE a.inn LIKE ? OR a.canonical_name LIKE ?"
+        params = [like, like]
+    with closing(connect()) as db:
+        rows = db.execute(
+            f"""
+            SELECT a.id, a.inn, a.canonical_name, a.first_seen_at, a.last_seen_at,
+                   COUNT(DISTINCT l.creative_id) AS creatives_count,
+                   COUNT(DISTINCT c.platform) AS platforms_count
+            FROM advertisers a
+            LEFT JOIN creative_advertiser_links l ON l.advertiser_id = a.id
+            LEFT JOIN creatives c ON c.id = l.creative_id
+            {where_sql}
+            GROUP BY a.id
+            ORDER BY a.last_seen_at DESC
+            LIMIT 200
+            """,
+            params,
+        ).fetchall()
+    rows_html = "".join(
+        f'<tr><td><strong>{esc(r["canonical_name"] or "—")}</strong></td><td class="mono">{esc(r["inn"] or "—")}</td>'
+        f'<td><a href="{P("/creatives?q=")}{esc(r["canonical_name"] or r["inn"] or "")}">{r["creatives_count"]} →</a></td>'
+        f'<td>{r["platforms_count"]}</td><td>{esc(r["first_seen_at"])}</td><td>{esc(r["last_seen_at"])}</td></tr>'
+        for r in rows
+    ) or '<tr><td colspan="6" class="empty">Рекламодатели пока не распознаны. Они появляются автоматически, когда парсер находит ИНН/название на странице креатива.</td></tr>'
+    body = f"""<div class="panel">
+<form method="get" action="{P('/advertisers')}" class="filters"><input name="q" placeholder="Поиск по ИНН или названию" value="{esc(q)}"><button class="btn">Найти</button><a class="btn secondary" href="{P('/advertisers')}">Сбросить</a><span class="muted">Всего: {len(rows)}</span></form>
+<div class="table-wrap"><table><thead><tr><th>Рекламодатель</th><th>ИНН</th><th>Креативов</th><th>Площадок</th><th>Впервые замечен</th><th>Последний раз</th></tr></thead><tbody>{rows_html}</tbody></table></div>
+</div>"""
+    return page(request, "Рекламодатели", body, "advertisers")
 
 
 @app.get("/api/admin/intents")
