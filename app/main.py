@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,11 @@ ADMIN_USER = os.getenv("PARSYA_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("PARSYA_ADMIN_PASSWORD", "")
 WORKER_TOKEN = os.getenv("PARSYA_WORKER_TOKEN", "")
 PUBLIC_API_TOKEN = os.getenv("PARSYA_PUBLIC_API_TOKEN", "")
+# Separate, narrower-scope token for addAvto (a different project on the same
+# server) to read Yandex-account Metrika OAuth tokens from the pool — kept
+# distinct from WORKER_TOKEN so a leak on addAvto's side can't reach job
+# management. Optional: unset simply means these endpoints always 401.
+ADDAVTO_TOKEN = os.getenv("PARSYA_ADDAVTO_TOKEN", "")
 SECRET_KEY = os.getenv("PARSYA_SECRET_KEY", "")
 COOKIE_SECURE = os.getenv("PARSYA_COOKIE_SECURE", "1").strip().lower() in {"1", "true", "yes"}
 MAX_HTML_CHARS = 2_000_000
@@ -67,6 +73,31 @@ if FRONTEND_ORIGINS:
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
         allow_credentials=False,
     )
+
+# 2026-11-03: эта панель теперь доступна и под своим собственным доменом
+# (парсер.союзюристовроссии.рф, корень "/" — как и раньше) И как подвкладка
+# внутри addAvto (реклама.союзюристовроссии.рф/parser/...), через nginx
+# reverse-proxy. Все ссылки/формы/редиректы в этом файле — захардкоженные
+# абсолютные пути ("/dashboard" и т.п.), поэтому при обращении через
+# addAvto их нужно дополнять префиксом "/parser", иначе браузер уйдёт на
+# корень чужого домена. Префикс приходит от nginx только для этого
+# конкретного маршрута (заголовок X-Forwarded-Prefix) — прямые запросы на
+# собственный домен этот заголовок не шлют, и P("") там всегда "" (ничего
+# не меняется, старое поведение сохранено).
+_URL_PREFIX: ContextVar[str] = ContextVar("url_prefix", default="")
+
+
+def P(path: str = "") -> str:
+    return _URL_PREFIX.get() + path
+
+
+@app.middleware("http")
+async def _apply_forwarded_prefix(request: Request, call_next):
+    token = _URL_PREFIX.set(request.headers.get("x-forwarded-prefix", "").rstrip("/"))
+    try:
+        return await call_next(request)
+    finally:
+        _URL_PREFIX.reset(token)
 
 
 def now_iso() -> str:
@@ -725,7 +756,7 @@ def auth_page(request: Request) -> bool:
 
 def require_admin(request: Request) -> None:
     if not auth_page(request):
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+        raise HTTPException(status_code=303, headers={"Location": P("/login")})
 
 
 def csrf_token(request: Request) -> str:
@@ -755,23 +786,23 @@ def page(request: Request, title: str, body: str, active: str = "") -> HTMLRespo
         ]
         nav = '<aside class="sidebar"><div class="brand"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><nav>'
         nav += "".join(
-            f'<a class="{ "active" if key == active else "" }" href="{href}">{label}</a>'
+            f'<a class="{ "active" if key == active else "" }" href="{P(href)}">{label}</a>'
             for href, label, key in links
         )
-        nav += '</nav><div class="side-bottom"><span class="dot"></span> Панель управления<br><small>Пользователь: ' + esc(user) + '</small><form method="post" action="/logout"><input type="hidden" name="csrf_token" value="' + esc(csrf_token(request)) + '"><button class="logout">Выйти</button></form></div></aside>'
+        nav += '</nav><div class="side-bottom"><span class="dot"></span> Панель управления<br><small>Пользователь: ' + esc(user) + '</small><form method="post" action="' + P("/logout") + '"><input type="hidden" name="csrf_token" value="' + esc(csrf_token(request)) + '"><button class="logout">Выйти</button></form></div></aside>'
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} · ParsYa</title>
 <style>
 :root{{--bg:#0b1220;--panel:#111c2e;--panel2:#16243a;--line:#263750;--text:#e8eef8;--muted:#96a8c0;--blue:#64a5ff;--green:#48d6a0;--amber:#ffcb70;--red:#ff7c88}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}}a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}button,input,select,textarea{{font:inherit}}.app{{display:flex;min-height:100vh}}.sidebar{{width:238px;flex:0 0 238px;padding:24px 16px;background:#0d1728;border-right:1px solid var(--line);display:flex;flex-direction:column}}.brand{{display:flex;align-items:center;gap:11px;padding:4px 10px 30px}}.brand-mark{{height:38px;width:38px;border-radius:12px;background:linear-gradient(135deg,#5eb1ff,#7169ff);display:grid;place-items:center;font-size:22px;font-weight:800;color:#061020}}.brand b{{display:block;font-size:17px;letter-spacing:.3px}}.brand small{{display:block;color:var(--muted);font-size:9px;letter-spacing:1.6px}}nav{{display:grid;gap:7px}}nav a{{padding:11px 12px;border-radius:9px;color:#a9bad0}}nav a.active,nav a:hover{{background:#1a2a43;color:#fff;text-decoration:none}}.side-bottom{{margin-top:auto;color:var(--muted);font-size:12px;padding:18px 10px 0}}.dot{{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}}.logout{{margin-top:12px;background:none;border:1px solid var(--line);color:var(--muted);padding:7px 12px;border-radius:8px;cursor:pointer}}main{{flex:1;min-width:0;padding:30px clamp(18px,3vw,44px);max-width:1700px}}.topline{{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:24px}}h1{{margin:0;font-size:26px;letter-spacing:-.5px}}h2{{font-size:16px;margin:0 0 16px}}.muted{{color:var(--muted)}}.grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:24px}}.metric,.panel,.card{{background:var(--panel);border:1px solid var(--line);border-radius:14px}}.metric{{padding:19px}}.metric .label{{color:var(--muted);font-size:12px}}.metric .value{{font-size:29px;font-weight:750;margin-top:7px;letter-spacing:-.5px}}.metric .hint{{font-size:11px;color:var(--muted);margin-top:2px}}.panel{{padding:21px;margin-bottom:20px}}.panel-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:15px}}.btn{{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:#5d9eff;color:#071326;border:0;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer}}.btn:hover{{background:#83b6ff;text-decoration:none}}.btn.secondary{{background:#1c2c44;color:var(--text);border:1px solid var(--line)}}.btn.danger{{background:#442333;color:#ffb9c0}}.table-wrap{{overflow:auto}}table{{width:100%;border-collapse:collapse;white-space:nowrap}}th{{color:var(--muted);font-size:11px;text-align:left;font-weight:600;padding:10px;border-bottom:1px solid var(--line)}}td{{padding:12px 10px;border-bottom:1px solid #202e43;vertical-align:middle}}tr:last-child td{{border-bottom:0}}.badge{{display:inline-flex;border-radius:99px;padding:4px 8px;font-size:11px;background:#26354c;color:#c5d7ef}}.badge.ok,.badge.completed{{background:#133a37;color:#73e5bc}}.badge.running{{background:#3e321a;color:#ffce7c}}.badge.failed,.badge.error{{background:#44232c;color:#ffadb5}}.badge.queued{{background:#25314a;color:#a9c8ff}}.formgrid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}}label{{display:block;color:#b3c4d9;font-size:12px;margin-bottom:7px}}input,select,textarea{{width:100%;background:#0b1525;border:1px solid #30425d;color:var(--text);padding:11px 12px;border-radius:9px;outline:none}}input:focus,select:focus,textarea:focus{{border-color:var(--blue)}}.field{{margin-bottom:16px}}.help{{font-size:12px;color:var(--muted);margin-top:6px}}.empty{{padding:32px;text-align:center;color:var(--muted)}}.filters{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}}.filters input,.filters select{{width:auto;min-width:170px}}.creative-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}}.creative{{overflow:hidden}}.creative-preview{{height:195px;background:#e8edf3;color:#172235;overflow:hidden;display:flex;align-items:center;justify-content:center}}.creative-preview iframe{{width:100%;height:100%;border:0;background:white}}.creative-preview img{{max-width:100%;max-height:100%;object-fit:contain}}.creative-info{{padding:15px}}.creative-info h3{{font-size:14px;line-height:1.4;margin:0 0 8px;overflow-wrap:anywhere}}.creative-meta{{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0}}.mono{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}}.log{{max-height:600px;overflow:auto;background:#07101d;padding:15px;border-radius:10px;border:1px solid var(--line);color:#bdd0e6}}.detail-grid{{display:grid;grid-template-columns: minmax(0,1fr) minmax(0,1fr);gap:18px}}.html-frame{{width:100%;height:650px;border:1px solid var(--line);background:white;border-radius:10px}}.notice{{border:1px solid #33445d;background:#142139;border-radius:10px;padding:12px 14px;color:#b8cbe2;margin-bottom:16px}}.error-text{{color:#ff9fa8}}.right{{text-align:right}}.footnote{{font-size:11px;color:var(--muted);margin-top:15px}}@media(max-width:1050px){{.grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}.creative-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}@media(max-width:720px){{.app{{display:block}}.sidebar{{width:100%;padding:12px;display:block;border-right:0;border-bottom:1px solid var(--line)}}.brand{{padding:4px 6px 12px}}nav{{display:flex;overflow:auto}}nav a{{white-space:nowrap;padding:8px}}.side-bottom{{display:none}}main{{padding:22px 14px}}.grid{{gap:8px}}.metric{{padding:13px}}.metric .value{{font-size:23px}}.creative-grid,.formgrid,.detail-grid{{grid-template-columns:1fr}}h1{{font-size:22px}}.topline{{align-items:flex-start}}}}
-</style></head><body><div class="app">{nav}<main><div class="topline"><div><h1>{esc(title)}</h1><div class="muted">Удалённое управление ParsYa · воркер подключается к серверу исходящим HTTPS</div></div>{'<a class="btn" href="/new-run">＋ Новый запуск</a>' if auth_page(request) and active != 'new-run' else ''}</div>{body}<div class="footnote">ParsYa Control Plane · HTML креативов отображается в изолированном iframe без выполнения скриптов.</div></main></div></body></html>"""
+</style></head><body><div class="app">{nav}<main><div class="topline"><div><h1>{esc(title)}</h1><div class="muted">Удалённое управление ParsYa · воркер подключается к серверу исходящим HTTPS</div></div>{'<a class="btn" href="' + P('/new-run') + '">＋ Новый запуск</a>' if auth_page(request) and active != 'new-run' else ''}</div>{body}<div class="footnote">ParsYa Control Plane · HTML креативов отображается в изолированном iframe без выполнения скриптов.</div></main></div></body></html>"""
     return HTMLResponse(html)
 
 
 def admin_or_redirect(request: Request):
     if not auth_page(request):
-        return RedirectResponse("/login", status_code=303)
+        return RedirectResponse(P("/login"), status_code=303)
     return None
 
 
@@ -781,6 +812,29 @@ def worker_auth(authorization: str | None) -> None:
     provided = authorization[7:].strip()
     if not hmac.compare_digest(provided, WORKER_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid worker token")
+
+
+def addavto_auth(authorization: str | None) -> None:
+    if not ADDAVTO_TOKEN or not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="addAvto authentication required")
+    provided = authorization[7:].strip()
+    if not hmac.compare_digest(provided, ADDAVTO_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid addAvto token")
+
+
+def _yandex_pool_mysql_config() -> dict[str, Any]:
+    password = os.getenv("PARSYA_DB_PASSWORD", "")
+    if not password:
+        raise HTTPException(status_code=503, detail="PARSYA_DB_PASSWORD не задан на сервере — пул недоступен")
+    return {
+        "host": os.getenv("PARSYA_DB_HOST", "localhost"),
+        "port": int(os.getenv("PARSYA_DB_PORT", "3306")),
+        "user": os.getenv("PARSYA_DB_USER", "parsya"),
+        "password": password,
+        "database": os.getenv("PARSYA_DB_NAME", "Data_Science"),
+        "charset": "utf8mb4",
+        "connection_timeout": int(os.getenv("PARSYA_DB_CONNECT_TIMEOUT", "10")),
+    }
 
 
 PBKDF2_ITERATIONS = 310_000
@@ -1092,8 +1146,8 @@ def health():
 @app.get("/login", response_class=HTMLResponse)
 def login_get(request: Request, error: str = ""):
     if auth_page(request):
-        return RedirectResponse("/dashboard", status_code=303)
-    body = f"""<div style="max-width:440px;margin:8vh auto" class="panel"><div class="brand" style="padding:0 0 20px"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><p class="muted">Войдите в панель управления парсером.</p>{'<div class="notice error-text">'+esc(error)+'</div>' if error else ''}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}"><div class="field"><label>Логин</label><input name="username" required autocomplete="username"></div><div class="field"><label>Пароль</label><input type="password" name="password" required autocomplete="current-password"></div><button class="btn" style="width:100%">Войти</button></form></div>"""
+        return RedirectResponse(P("/dashboard"), status_code=303)
+    body = f"""<div style="max-width:440px;margin:8vh auto" class="panel"><div class="brand" style="padding:0 0 20px"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><p class="muted">Войдите в панель управления парсером.</p>{'<div class="notice error-text">'+esc(error)+'</div>' if error else ''}<form method="post" action="{P('/login')}"><input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}"><div class="field"><label>Логин</label><input name="username" required autocomplete="username"></div><div class="field"><label>Пароль</label><input type="password" name="password" required autocomplete="current-password"></div><button class="btn" style="width:100%">Войти</button></form></div>"""
     # Login page has no sidebar.
     return HTMLResponse(page(request, "Вход", body).body.decode("utf-8").replace('<div class="app"><main>', '<div class="app"><main>'))
 
@@ -1111,20 +1165,20 @@ def login_post(
         request.session["authenticated"] = True
         request.session["username"] = username
         request.session["csrf"] = secrets.token_urlsafe(32)
-        return RedirectResponse("/dashboard", status_code=303)
-    return RedirectResponse("/login?error=" + ("Неверный%20логин%20или%20пароль"), status_code=303)
+        return RedirectResponse(P("/dashboard"), status_code=303)
+    return RedirectResponse(P("/login") + "?error=" + ("Неверный%20логин%20или%20пароль"), status_code=303)
 
 
 @app.post("/logout")
 def logout(request: Request, csrf_token_value: str = Form(..., alias="csrf_token")):
     check_csrf(request, csrf_token_value)
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse(P("/login"), status_code=303)
 
 
 @app.get("/")
 def root(request: Request):
-    return RedirectResponse("/dashboard" if auth_page(request) else "/login", status_code=303)
+    return RedirectResponse(P("/dashboard") if auth_page(request) else P("/login"), status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -1142,12 +1196,12 @@ def dashboard(request: Request):
         top_sites = db.execute("SELECT platform,COUNT(*) n FROM occurrences GROUP BY platform ORDER BY n DESC LIMIT 8").fetchall()
     def badge(status: str) -> str:
         return f'<span class="badge {esc(status)}">{esc(status)}</span>'
-    rows = "".join(f'<tr><td><a href="/runs/{r["id"]}">#{r["id"]}</a></td><td>{esc(r["city"])}</td><td>{esc(r["key_text"])}</td><td>{badge(r["status"])}</td><td>{esc(r["created_at"])}</td><td>{r["total_creatives"]}</td></tr>' for r in recent) or '<tr><td colspan="6" class="empty">Запусков пока нет. Создайте первый запуск.</td></tr>'
+    rows = "".join(f'<tr><td><a href="{P("/runs/")}{r["id"]}">#{r["id"]}</a></td><td>{esc(r["city"])}</td><td>{esc(r["key_text"])}</td><td>{badge(r["status"])}</td><td>{esc(r["created_at"])}</td><td>{r["total_creatives"]}</td></tr>' for r in recent) or '<tr><td colspan="6" class="empty">Запусков пока нет. Создайте первый запуск.</td></tr>'
     workers = "".join(f'<tr><td>{esc(w["worker_id"])}</td><td>{esc(w["hostname"])}</td><td>{badge(w["state"])}</td><td>{esc(w["last_seen"])}</td><td>{("#"+str(w["current_job_id"])) if w["current_job_id"] else "—"}</td></tr>' for w in worker_rows) or '<tr><td colspan="5" class="empty">Воркер ещё не подключался</td></tr>'
     sites = "".join(f'<tr><td>{esc(s["platform"])}</td><td>{s["n"]}</td></tr>' for s in top_sites) or '<tr><td colspan="2" class="empty">Данные появятся после синхронизации</td></tr>'
     body = f"""<div class="grid"><div class="metric"><div class="label">Всего запусков</div><div class="value">{jobs}</div><div class="hint">За всё время</div></div><div class="metric"><div class="label">В очереди / выполняются</div><div class="value">{active}</div><div class="hint">Незавершённые задания</div></div><div class="metric"><div class="label">Уникальные креативы</div><div class="value">{creatives}</div><div class="hint">С сохранённым HTML при наличии</div></div><div class="metric"><div class="label">Обнаружения</div><div class="value">{occurrences}</div><div class="hint">С учётом повторов в разных запусках</div></div></div>
-<div class="panel"><div class="panel-head"><h2>Последние запуски</h2><a href="/runs">Все запуски →</a></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Город</th><th>Запрос</th><th>Статус</th><th>Создан</th><th>Креативы</th></tr></thead><tbody>{rows}</tbody></table></div></div>
-<div class="detail-grid"><div class="panel"><div class="panel-head"><h2>Состояние WSL-воркера</h2></div><div class="table-wrap"><table><thead><tr><th>Worker ID</th><th>Узел</th><th>Статус</th><th>Последний сигнал</th><th>Задание</th></tr></thead><tbody>{workers}</tbody></table></div></div><div class="panel"><div class="panel-head"><h2>Площадки по обнаружениям</h2><a href="/creatives">Креативы →</a></div><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div></div>
+<div class="panel"><div class="panel-head"><h2>Последние запуски</h2><a href="{P("/runs")}">Все запуски →</a></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Город</th><th>Запрос</th><th>Статус</th><th>Создан</th><th>Креативы</th></tr></thead><tbody>{rows}</tbody></table></div></div>
+<div class="detail-grid"><div class="panel"><div class="panel-head"><h2>Состояние WSL-воркера</h2></div><div class="table-wrap"><table><thead><tr><th>Worker ID</th><th>Узел</th><th>Статус</th><th>Последний сигнал</th><th>Задание</th></tr></thead><tbody>{workers}</tbody></table></div></div><div class="panel"><div class="panel-head"><h2>Площадки по обнаружениям</h2><a href="{P("/creatives")}">Креативы →</a></div><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div></div>
 <div class="notice">Сервер не подключается к WSL напрямую. WSL-воркер сам опрашивает эту панель по HTTPS и забирает задания.</div>"""
     return page(request, "Обзор", body, "dashboard")
 
@@ -1157,7 +1211,7 @@ def new_run_get(request: Request):
     redirect = admin_or_redirect(request)
     if redirect:
         return redirect
-    body = f"""<div class="panel" style="max-width:850px"><h2>Параметры запуска</h2><p class="muted">Задание попадёт в очередь. WSL-воркер заберёт его при следующем опросе.</p><form method="post" action="/new-run"><input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}"><div class="formgrid"><div class="field"><label>Город</label><input name="city" value="Екатеринбург" maxlength="100" required><div class="help">Используется существующей логикой парсера для выбора прокси.</div></div><div class="field"><label>Поисковый запрос / ключевая фраза</label><input name="key_text" value="увеличение пенсии" maxlength="300" required><div class="help">Например: «банкротство физических лиц».</div></div></div><div class="notice">В первой версии воркер выполняет только заранее заданный тип задания «запуск ParsYa». Произвольные команды оболочки через панель не передаются.</div><button class="btn">＋ Добавить в очередь</button> <a class="btn secondary" href="/runs">Отмена</a></form></div>"""
+    body = f"""<div class="panel" style="max-width:850px"><h2>Параметры запуска</h2><p class="muted">Задание попадёт в очередь. WSL-воркер заберёт его при следующем опросе.</p><form method="post" action="{P('/new-run')}"><input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}"><div class="formgrid"><div class="field"><label>Город</label><input name="city" value="Екатеринбург" maxlength="100" required><div class="help">Используется существующей логикой парсера для выбора прокси.</div></div><div class="field"><label>Поисковый запрос / ключевая фраза</label><input name="key_text" value="увеличение пенсии" maxlength="300" required><div class="help">Например: «банкротство физических лиц».</div></div></div><div class="notice">В первой версии воркер выполняет только заранее заданный тип задания «запуск ParsYa». Произвольные команды оболочки через панель не передаются.</div><button class="btn">＋ Добавить в очередь</button> <a class="btn secondary" href="{P('/runs')}">Отмена</a></form></div>"""
     return page(request, "Новый запуск", body, "new-run")
 
 
@@ -1182,7 +1236,7 @@ def new_run_post(
         )
         job_id = cur.lastrowid
         db.commit()
-    return RedirectResponse(f"/runs/{job_id}", status_code=303)
+    return RedirectResponse(P(f"/runs/{job_id}"), status_code=303)
 
 
 @app.get("/runs", response_class=HTMLResponse)
@@ -1192,8 +1246,8 @@ def runs_page(request: Request):
         return redirect
     with closing(connect()) as db:
         rows_data = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 200").fetchall()
-    rows = "".join(f'<tr><td><a href="/runs/{r["id"]}">#{r["id"]}</a></td><td>{esc(r["city"])}</td><td>{esc(r["key_text"])}</td><td><span class="badge {esc(r["status"])}">{esc(r["status"])}</span></td><td>{esc(r["worker_id"] or "—")}</td><td>{esc(r["created_at"])}</td><td>{esc(r["started_at"] or "—")}</td><td>{esc(r["finished_at"] or "—")}</td><td>{r["total_creatives"]}</td></tr>' for r in rows_data) or '<tr><td colspan="9" class="empty">Запусков пока нет</td></tr>'
-    body = f'<div class="panel"><div class="panel-head"><h2>История заданий</h2><a class="btn" href="/new-run">＋ Создать запуск</a></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Город</th><th>Запрос</th><th>Статус</th><th>Воркер</th><th>Создан</th><th>Старт</th><th>Окончен</th><th>Креативы</th></tr></thead><tbody>{rows}</tbody></table></div></div>'
+    rows = "".join(f'<tr><td><a href="{P("/runs/")}{r["id"]}">#{r["id"]}</a></td><td>{esc(r["city"])}</td><td>{esc(r["key_text"])}</td><td><span class="badge {esc(r["status"])}">{esc(r["status"])}</span></td><td>{esc(r["worker_id"] or "—")}</td><td>{esc(r["created_at"])}</td><td>{esc(r["started_at"] or "—")}</td><td>{esc(r["finished_at"] or "—")}</td><td>{r["total_creatives"]}</td></tr>' for r in rows_data) or '<tr><td colspan="9" class="empty">Запусков пока нет</td></tr>'
+    body = f'<div class="panel"><div class="panel-head"><h2>История заданий</h2><a class="btn" href="{P("/new-run")}">＋ Создать запуск</a></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Город</th><th>Запрос</th><th>Статус</th><th>Воркер</th><th>Создан</th><th>Старт</th><th>Окончен</th><th>Креативы</th></tr></thead><tbody>{rows}</tbody></table></div></div>'
     return page(request, "Запуски", body, "runs")
 
 
@@ -1238,13 +1292,13 @@ def run_detail(request: Request, job_id: int):
   const img = document.getElementById('browserScreen');
   const urlLabel = document.getElementById('browserUrl');
   async function sendCommand(command) {{
-    await fetch(`/api/admin/jobs/${{jobId}}/browser/command`, {{
+    await fetch(`{P('')}/api/admin/jobs/${{jobId}}/browser/command`, {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(command),
     }});
   }}
   async function poll() {{
     try {{
-      const r = await fetch(`/api/admin/jobs/${{jobId}}/browser/state`);
+      const r = await fetch(`{P('')}/api/admin/jobs/${{jobId}}/browser/state`);
       const data = await r.json();
       if (data.active && data.captcha_required) {{
         panel.style.display = '';
@@ -1304,8 +1358,8 @@ def creatives_page(request: Request, q: str = "", platform: str = "", status: st
     cards = []
     for item in items:
         preview = f'<img src="{esc(item["image_url"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if item["image_url"] and item["image_url"].startswith(("https://", "http://")) else '<span class="muted">HTML-креатив</span>'
-        cards.append(f'<article class="card creative"><a class="creative-preview" href="/creatives/{item["id"]}">{preview}</a><div class="creative-info"><h3><a href="/creatives/{item["id"]}">{esc(item["title"] or item["domain"] or "Без заголовка")}</a></h3><div class="muted">{esc(item["platform"])} · {esc(item["domain"] or "домен не определён")}</div><div class="creative-meta"><span class="badge">{esc(item["detection_method"])}</span><span class="badge {"ok" if item["recognition_status"] == "recognized" else "running"}">{esc(item["recognition_status"])}</span></div><div class="muted">{esc(item["captured_at"])}</div></div></article>')
-    body = f"""<div class="panel"><form method="get" action="/creatives" class="filters"><input name="q" placeholder="Поиск по тексту / домену" value="{esc(q)}"><select name="platform">{platform_options}</select><select name="status"><option value="">Все статусы</option><option value="recognized" {"selected" if status=="recognized" else ""}>recognized</option><option value="partial" {"selected" if status=="partial" else ""}>partial</option></select><button class="btn">Фильтровать</button><a class="btn secondary" href="/creatives">Сбросить</a><span class="muted">Всего: {total}</span></form><div class="creative-grid">{''.join(cards) if cards else '<div class="empty">Креативы пока не синхронизированы с WSL. Убедитесь, что воркер подключён и MySQL-доступ настроен.</div>'}</div></div>"""
+        cards.append(f'<article class="card creative"><a class="creative-preview" href="{P("/creatives/")}{item["id"]}">{preview}</a><div class="creative-info"><h3><a href="{P("/creatives/")}{item["id"]}">{esc(item["title"] or item["domain"] or "Без заголовка")}</a></h3><div class="muted">{esc(item["platform"])} · {esc(item["domain"] or "домен не определён")}</div><div class="creative-meta"><span class="badge">{esc(item["detection_method"])}</span><span class="badge {"ok" if item["recognition_status"] == "recognized" else "running"}">{esc(item["recognition_status"])}</span></div><div class="muted">{esc(item["captured_at"])}</div></div></article>')
+    body = f"""<div class="panel"><form method="get" action="{P('/creatives')}" class="filters"><input name="q" placeholder="Поиск по тексту / домену" value="{esc(q)}"><select name="platform">{platform_options}</select><select name="status"><option value="">Все статусы</option><option value="recognized" {"selected" if status=="recognized" else ""}>recognized</option><option value="partial" {"selected" if status=="partial" else ""}>partial</option></select><button class="btn">Фильтровать</button><a class="btn secondary" href="{P('/creatives')}">Сбросить</a><span class="muted">Всего: {total}</span></form><div class="creative-grid">{''.join(cards) if cards else '<div class="empty">Креативы пока не синхронизированы с WSL. Убедитесь, что воркер подключён и MySQL-доступ настроен.</div>'}</div></div>"""
     return page(request, "Библиотека рекламы", body, "creatives")
 
 
@@ -1326,15 +1380,15 @@ def creative_detail(request: Request, creative_id: int):
         except Exception:
             html_text = "<!-- Не удалось распаковать HTML -->"
     srcdoc = esc(html_text)
-    ev_rows = "".join(f'<tr><td><a href="/runs/{e["job_id"]}">#{e["job_id"]}</a></td><td>{esc(e["platform"])}</td><td>{esc(e["observed_at"])}</td><td>{esc(e["detection_method"])}</td><td>{esc(e["city"])}</td><td>{esc(e["key_text"])}</td></tr>' for e in events) or '<tr><td colspan="6" class="empty">История обнаружений отсутствует</td></tr>'
-    body = f"""<p><a href="/creatives">← К библиотеке</a></p><div class="detail-grid"><div class="panel"><h2>Метаданные креатива</h2><table><tbody><tr><th>Площадка</th><td>{esc(item["platform"])}</td></tr><tr><th>Рекламодатель</th><td>{esc(item["domain"] or "—")}</td></tr><tr><th>Заголовок</th><td>{esc(item["title"] or "—")}</td></tr><tr><th>Описание</th><td>{esc(item["description"] or "—")}</td></tr><tr><th>Метод</th><td>{esc(item["detection_method"] or "—")}</td></tr><tr><th>Распознавание</th><td>{esc(item["recognition_status"])}</td></tr><tr><th>Первый запуск</th><td>{esc(item["first_job_id"] or "—")}</td></tr><tr><th>Последний запуск</th><td>{esc(item["last_job_id"] or "—")}</td></tr><tr><th>Сохранён</th><td>{esc(item["captured_at"])}</td></tr><tr><th>SHA-256 HTML</th><td class="mono">{esc(item["html_sha256"] or "—")}</td></tr><tr><th>Ссылка назначения</th><td>{'<a href="'+esc(item["destination_url"])+'" rel="noopener noreferrer" target="_blank">Открыть сайт</a>' if item["destination_url"] and item["destination_url"].startswith(("https://","http://")) else "—"}</td></tr></tbody></table></div><div class="panel"><h2>Оригинальный HTML · изолированный предпросмотр</h2>{'<iframe class="html-frame" sandbox="" referrerpolicy="no-referrer" srcdoc="'+srcdoc+'"></iframe>' if html_text else '<div class="empty">Для этого креатива HTML не сохранён.</div>'}<p><a class="btn secondary" href="/api/creatives/{creative_id}/html">Скачать HTML</a></p></div></div><div class="panel"><h2>История обнаружений</h2><div class="table-wrap"><table><thead><tr><th>Запуск</th><th>Площадка</th><th>Дата</th><th>Метод</th><th>Город</th><th>Запрос</th></tr></thead><tbody>{ev_rows}</tbody></table></div></div>"""
+    ev_rows = "".join(f'<tr><td><a href="{P("/runs/")}{e["job_id"]}">#{e["job_id"]}</a></td><td>{esc(e["platform"])}</td><td>{esc(e["observed_at"])}</td><td>{esc(e["detection_method"])}</td><td>{esc(e["city"])}</td><td>{esc(e["key_text"])}</td></tr>' for e in events) or '<tr><td colspan="6" class="empty">История обнаружений отсутствует</td></tr>'
+    body = f"""<p><a href="{P('/creatives')}">← К библиотеке</a></p><div class="detail-grid"><div class="panel"><h2>Метаданные креатива</h2><table><tbody><tr><th>Площадка</th><td>{esc(item["platform"])}</td></tr><tr><th>Рекламодатель</th><td>{esc(item["domain"] or "—")}</td></tr><tr><th>Заголовок</th><td>{esc(item["title"] or "—")}</td></tr><tr><th>Описание</th><td>{esc(item["description"] or "—")}</td></tr><tr><th>Метод</th><td>{esc(item["detection_method"] or "—")}</td></tr><tr><th>Распознавание</th><td>{esc(item["recognition_status"])}</td></tr><tr><th>Первый запуск</th><td>{esc(item["first_job_id"] or "—")}</td></tr><tr><th>Последний запуск</th><td>{esc(item["last_job_id"] or "—")}</td></tr><tr><th>Сохранён</th><td>{esc(item["captured_at"])}</td></tr><tr><th>SHA-256 HTML</th><td class="mono">{esc(item["html_sha256"] or "—")}</td></tr><tr><th>Ссылка назначения</th><td>{'<a href="'+esc(item["destination_url"])+'" rel="noopener noreferrer" target="_blank">Открыть сайт</a>' if item["destination_url"] and item["destination_url"].startswith(("https://","http://")) else "—"}</td></tr></tbody></table></div><div class="panel"><h2>Оригинальный HTML · изолированный предпросмотр</h2>{'<iframe class="html-frame" sandbox="" referrerpolicy="no-referrer" srcdoc="'+srcdoc+'"></iframe>' if html_text else '<div class="empty">Для этого креатива HTML не сохранён.</div>'}<p><a class="btn secondary" href="{P(f'/api/creatives/{creative_id}/html')}">Скачать HTML</a></p></div></div><div class="panel"><h2>История обнаружений</h2><div class="table-wrap"><table><thead><tr><th>Запуск</th><th>Площадка</th><th>Дата</th><th>Метод</th><th>Город</th><th>Запрос</th></tr></thead><tbody>{ev_rows}</tbody></table></div></div>"""
     return page(request, f"Креатив #{creative_id}", body, "creatives")
 
 
 @app.get("/api/creatives/{creative_id}/html")
 def creative_html_download(request: Request, creative_id: int):
     if not auth_page(request):
-        return RedirectResponse("/login", status_code=303)
+        return RedirectResponse(P("/login"), status_code=303)
     with closing(connect()) as db:
         row = db.execute("SELECT title,html_gzip FROM creatives WHERE id=?", (creative_id,)).fetchone()
     if not row or not row["html_gzip"]:
@@ -1361,7 +1415,7 @@ def admin_users_page(request: Request, created_email: str = "", created_password
     table_rows = "".join(
         f'<tr><td>{esc(u["email"])}</td><td>{role_badge(u["role"])}</td><td>{status_badge(u["is_active"])}</td>'
         f'<td>{esc(u["created_at"])}</td><td>{esc(u["last_login_at"] or "—")}</td>'
-        f'<td class="right">{"" if not u["is_active"] else "<form method=\"post\" action=\"/admin/users/" + str(u["id"]) + "/deactivate\" style=\"display:inline\"><input type=\"hidden\" name=\"csrf_token\" value=\"" + esc(csrf_token(request)) + "\"><button class=\"btn secondary\">Отключить</button></form>"}</td></tr>'
+        f'<td class="right">{"" if not u["is_active"] else "<form method=\"post\" action=\"" + P("/admin/users/") + str(u["id"]) + "/deactivate\" style=\"display:inline\"><input type=\"hidden\" name=\"csrf_token\" value=\"" + esc(csrf_token(request)) + "\"><button class=\"btn secondary\">Отключить</button></form>"}</td></tr>'
         for u in rows
     ) or '<tr><td colspan="6" class="empty">Пользователей SaaS пока нет</td></tr>'
     notice = ""
@@ -1372,7 +1426,7 @@ def admin_users_page(request: Request, created_email: str = "", created_password
         notice = f'<div class="notice error-text">{esc(error)}</div>'
     body = f"""{notice}
 <div class="panel"><div class="panel-head"><h2>Новый аккаунт маркетолога</h2></div>
-<form method="post" action="/admin/users" class="formgrid">
+<form method="post" action="{P('/admin/users')}" class="formgrid">
 <input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}">
 <div class="field"><label>Email</label><input type="email" name="email" required maxlength="255"></div>
 <div class="field"><label>Роль</label><select name="role"><option value="marketer">Маркетолог</option><option value="admin">Админ SaaS</option></select></div>
@@ -1400,13 +1454,13 @@ def admin_users_create(
     with closing(connect()) as db:
         existing = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
         if existing:
-            return RedirectResponse(f"/admin/users?error=Email+{email}+уже+занят", status_code=303)
+            return RedirectResponse(P(f"/admin/users?error=Email+{email}+уже+занят"), status_code=303)
         db.execute(
             "INSERT INTO users(email,password_hash,role,is_active,created_at) VALUES(?,?,?,1,?)",
             (email, hash_password(temp_password), role, now_iso()),
         )
         db.commit()
-    return RedirectResponse(f"/admin/users?created_email={email}&created_password={temp_password}", status_code=303)
+    return RedirectResponse(P(f"/admin/users?created_email={email}&created_password={temp_password}"), status_code=303)
 
 
 @app.post("/admin/users/{user_id}/deactivate")
@@ -1419,7 +1473,7 @@ def admin_users_deactivate(request: Request, user_id: int, csrf_token_value: str
         db.execute("UPDATE users SET is_active=0 WHERE id=?", (user_id,))
         db.execute("DELETE FROM user_tokens WHERE user_id=?", (user_id,))
         db.commit()
-    return RedirectResponse("/admin/users", status_code=303)
+    return RedirectResponse(P("/admin/users"), status_code=303)
 
 
 @app.post("/api/worker/poll")
@@ -2067,6 +2121,140 @@ def worker_status(authorization: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("SELECT worker_id,hostname,version,last_seen,state,current_job_id,last_error FROM workers ORDER BY last_seen DESC").fetchall()
     return {"workers": [dict(row) for row in rows]}
+
+
+# --- addAvto integration: read-only access to the shared yandex_accounts
+# pool in MySQL (WSL), so addAvto (running on the production server, reached
+# over the reverse SSH tunnel at 127.0.0.1:8091) can attach a real Yandex ID
+# + its Metrika OAuth token to a project without maintaining its own
+# separate account list. See ADS_MANAGER_OVERVIEW.md / TASKS.md in ParsYa. ---
+
+def _yandex_pool_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "login": row["login"],
+        "status": row["status"],
+        "is_free": bool(row["is_free"]),
+        "has_metrika_token": row.get("metrika_access_token") is not None,
+        "metrika_token_expires_at": row["metrika_token_expires_at"].isoformat() if row.get("metrika_token_expires_at") else None,
+        "metrika_connected_at": row["metrika_connected_at"].isoformat() if row.get("metrika_connected_at") else None,
+    }
+
+
+@app.get("/api/addavto/yandex-pool-accounts")
+def addavto_list_yandex_pool_accounts(authorization: str | None = Header(default=None)):
+    addavto_auth(authorization)
+    import mysql.connector
+    conn = mysql.connector.connect(**_yandex_pool_mysql_config())
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT login, status, is_free, metrika_access_token, metrika_token_expires_at, "
+            "metrika_connected_at FROM yandex_accounts ORDER BY login"
+        )
+        return {"items": [_yandex_pool_row_to_dict(row) for row in cursor.fetchall()]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/addavto/yandex-pool-accounts/{login}")
+def addavto_get_yandex_pool_account(login: str, authorization: str | None = Header(default=None)):
+    addavto_auth(authorization)
+    import mysql.connector
+    conn = mysql.connector.connect(**_yandex_pool_mysql_config())
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT login, status, is_free, metrika_access_token, metrika_refresh_token, "
+            "metrika_token_expires_at, metrika_connected_at FROM yandex_accounts WHERE login=%s",
+            (login,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Аккаунт не найден в пуле ParsYa")
+        if not row.get("metrika_access_token"):
+            raise HTTPException(status_code=409, detail="У этого аккаунта ещё нет Metrika OAuth-токена")
+        result = _yandex_pool_row_to_dict(row)
+        result["metrika_access_token"] = row["metrika_access_token"]
+        result["metrika_refresh_token"] = row["metrika_refresh_token"]
+        return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/addavto/provision-direct-account")
+def addavto_provision_direct_account(
+    payload: dict[str, Any] | None = None,
+    authorization: str | None = Header(default=None),
+):
+    """Claim one not-yet-provisioned pool login and run the full
+    Selenium-driven pipeline (pool login -> Click.ru YANDEX_DIRECT
+    integration -> real Direct account) for it, via
+    provision_next_direct_account.py. This needs a real browser/display,
+    so it only runs here on WSL (addAvto itself has no Selenium) —
+    addAvto calls this once per new account it needs to bulk-generate
+    campaigns on, in series (not in parallel: one Chrome session at a time
+    to avoid resource contention/captcha-triggering concurrency).
+
+    Synchronous and slow (tens of seconds to ~2 minutes per call, same as
+    running the script by hand) — callers should budget accordingly.
+    """
+    addavto_auth(authorization)
+    import subprocess
+
+    name_prefix = (payload or {}).get("account_name_prefix")
+    parsya_root = Path(__file__).resolve().parent.parent.parent
+    command = [
+        str(parsya_root / ".venv" / "bin" / "python3"),
+        str(parsya_root / "provision_next_direct_account.py"),
+    ]
+    if name_prefix:
+        command.append(str(name_prefix)[:20])
+
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":0")
+    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+
+    # subprocess.run's own timeout kills via SIGKILL directly, which the
+    # child can't catch at all — its own cleanup (releasing the pool-login
+    # claim) never runs, leaving the login stuck "claimed" forever (seen
+    # live on the first real timeout). Send SIGTERM first and give the
+    # child's own handler (provision_next_direct_account.py) a few seconds
+    # to release the claim before escalating to SIGKILL.
+    proc = subprocess.Popen(
+        command, cwd=str(parsya_root), env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=280)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        raise HTTPException(status_code=504, detail="Провижининг аккаунта не успел завершиться за 280с")
+
+    class _Result:
+        pass
+    result = _Result()
+    result.stdout = stdout
+    result.stderr = stderr
+    result.returncode = returncode
+
+    for line in result.stdout.splitlines():
+        if line.startswith("RESULT_JSON:"):
+            return json.loads(line[len("RESULT_JSON:"):])
+        if line.startswith("ERROR_JSON:"):
+            detail = json.loads(line[len("ERROR_JSON:"):])
+            raise HTTPException(status_code=409, detail=detail.get("error", "Ошибка провижининга"))
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"Скрипт провижининга завершился без распознаваемого результата (exit={result.returncode}): "
+        f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}",
+    )
 
 
 @app.post("/api/v1/auth/login")
