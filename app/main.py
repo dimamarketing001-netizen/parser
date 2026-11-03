@@ -205,6 +205,30 @@ input:focus,select:focus,textarea:focus{border-color:var(--violet)}
 .empty-filter h3{font:800 17px Manrope,sans-serif;letter-spacing:-.04em;color:#2b2c39;margin:0 0 8px}
 .empty-filter p{font-size:11px;line-height:1.7;color:#8c8e9f;max-width:410px;margin:0 auto 18px}
 @media(max-width:760px){.librarycontrols{padding:13px;border-radius:18px}.toolbar{flex-wrap:wrap}.search{min-width:100%}.savedsearchlist{grid-template-columns:1fr}}
+
+/* Intent-picker — скоуп библиотеки к одному поисковому запросу (фаза 3,
+   2026-11-03), та же серверная стемминг/эмбеддинг-логика, что у
+   публичного /api/v1/creatives */
+.intentbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 18px;padding:14px 18px;background:#f8f6ff;border:1px solid #e8e4fa;border-radius:16px}
+.intentbar-left{display:flex;align-items:center;gap:12px;min-width:0}
+.intentbar-left>i{color:#7059cf;flex-shrink:0}
+.intentbar-copy{min-width:0}
+.intentbar-copy strong{display:block;font-size:13px;color:#2f2b4a;overflow-wrap:anywhere}
+.intentbar-copy span{display:block;font-size:10px;color:#8178a8;margin-top:2px}
+.intentbar-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.intentpicker{position:relative;margin:-6px 0 18px;padding:16px 18px;background:#fff;border:1px solid #e8e4fa;border-radius:16px;box-shadow:0 10px 30px #2b294a0f}
+.intentpicker[hidden]{display:none!important}
+.intentpicker-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.intentpicker-head strong{font-size:12px;color:#303743}
+.intentpicker-close{border:0;background:none;color:#9a9baa;cursor:pointer;font-size:16px;line-height:1}
+.intentpicker-search{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;font-size:12px;margin-bottom:10px;box-sizing:border-box}
+.intentpicker-list{max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+.intentrow{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;cursor:pointer}
+.intentrow:hover{background:#f8f6ff}
+.intentrow-copy{min-width:0;flex:1;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.intentrow-copy strong{font-size:12px;color:#2f2b4a;overflow-wrap:anywhere}
+.intentrow-copy span{font-size:10px;color:#9a9baa;flex-shrink:0;white-space:nowrap}
+.intentpicker-foot{display:flex;justify-content:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid #f1eefc}
 """
 
 
@@ -1548,14 +1572,64 @@ def run_detail(request: Request, job_id: int):
     return page(request, f"Запуск #{job_id}", body, "runs")
 
 
+@app.get("/api/admin/intents")
+def api_admin_intents(request: Request):
+    """Тот же список интентов, что и публичный /api/v1/intents, но под
+    сессионной авторизацией админки (не bearer-токен SaaS-фронтенда) —
+    питает intent-picker на /creatives. Переиспользует ровно ту же логику
+    (стемминг-поиск похожих интентов), что уже production-проверена в
+    публичном API."""
+    if not auth_page(request):
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    with closing(connect()) as db:
+        rows = db.execute(
+            """
+            SELECT PYLOWER(j.key_text) AS intent_key,
+                   MIN(j.key_text) AS display_text,
+                   COUNT(DISTINCT j.id) AS runs_count,
+                   COUNT(DISTINCT o.creative_id) AS creatives_count,
+                   MAX(j.created_at) AS last_run_at
+            FROM jobs j
+            LEFT JOIN occurrences o ON o.job_id = j.id
+            WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> ''
+            GROUP BY intent_key
+            ORDER BY last_run_at DESC
+            """
+        ).fetchall()
+    all_texts = [r["display_text"] for r in rows]
+    items = [
+        {
+            "intent": r["display_text"], "runs_count": r["runs_count"],
+            "creatives_count": r["creatives_count"],
+            "related": _related_intents([r["display_text"]], all_texts),
+        }
+        for r in rows
+    ]
+    return {"items": items}
+
+
 @app.get("/creatives", response_class=HTMLResponse)
-def creatives_page(request: Request):
+def creatives_page(request: Request, intent: str = ""):
     redirect = admin_or_redirect(request)
     if redirect:
         return redirect
+    intents = _parse_intents(intent)
     with closing(connect()) as db:
         platforms = db.execute("SELECT DISTINCT platform FROM creatives ORDER BY platform").fetchall()
-        items = db.execute("SELECT * FROM creatives ORDER BY captured_at DESC LIMIT 300").fetchall()
+        if intents:
+            # Та же серверная логика, что у /api/v1/creatives: сначала
+            # пробуем семантический (эмбеддинги) скоуп, если для хотя бы
+            # одного интента есть кэш; иначе — точное совпадение key_text.
+            combined = _semantic_intent_where(db, intents)
+            if combined:
+                where_sql, params = combined
+            else:
+                where_sql, params = _intent_exists_sql("c", intents), intents
+            items = db.execute(
+                f"SELECT c.* FROM creatives c WHERE {where_sql} ORDER BY c.captured_at DESC LIMIT 300", params
+            ).fetchall()
+        else:
+            items = db.execute("SELECT * FROM creatives ORDER BY captured_at DESC LIMIT 300").fetchall()
     platform_options = '<option value="all">Все площадки</option>' + "".join(f'<option value="{esc(p["platform"])}">{esc(p["platform"])}</option>' for p in platforms)
     cards = []
     for item in items:
@@ -1569,7 +1643,25 @@ def creatives_page(request: Request):
             f'<div class="creative-meta"><span class="badge">{esc(item["detection_method"])}</span><span class="badge {"ok" if item["recognition_status"] == "recognized" else "running"}">{esc(item["recognition_status"])}</span></div>'
             f'<div class="muted">{esc(item["captured_at"])}</div></div></article>'
         )
-    body = f"""<div class="librarycontrols">
+    intent_label = esc(intents[0]) if intents else "Все запросы"
+    intent_meta = (
+        f"Показаны только креативы по запросу «{esc(intents[0])}»" if intents
+        else "Фильтр по интенту выключен — показаны креативы всех запросов"
+    )
+    body = f"""<section class="intentbar" id="intentBar">
+  <div class="intentbar-left"><i data-lucide="target"></i><div class="intentbar-copy"><strong id="intentBarLabel">{intent_label}</strong><span id="intentBarMeta">{intent_meta}</span></div></div>
+  <div class="intentbar-actions">
+    <button class="secondary" type="button" id="intentBarPicker"><i data-lucide="chevron-down"></i> Выбрать интент</button>
+    {'<a class="secondary" href="' + P('/creatives') + '">Сбросить интент</a>' if intents else ''}
+  </div>
+</section>
+<div class="intentpicker" id="intentPicker" hidden>
+  <div class="intentpicker-head"><strong>Какой интент (поисковый запрос) показывать?</strong><button class="intentpicker-close" type="button" id="intentPickerClose" aria-label="Закрыть">×</button></div>
+  <input class="intentpicker-search" id="intentPickerSearch" placeholder="Поиск по запросам…" autocomplete="off">
+  <div class="intentpicker-list" id="intentPickerList"><div class="empty">Загрузка…</div></div>
+  <div class="intentpicker-foot"><button class="secondary" type="button" id="intentPickerClear">Показать все (сбросить)</button></div>
+</div>
+<div class="librarycontrols">
   <div class="toolbar">
     <label class="search"><i data-lucide="search"></i><input id="libQuery" placeholder="Поиск по тексту, домену или площадке…" autocomplete="off"></label>
     <select class="filter" id="libPlatform">{platform_options}</select>
@@ -1737,6 +1829,50 @@ def creatives_page(request: Request):
   refreshSaveButtons();
   renderSavedSearches();
   applyFilters();
+}})();
+
+(function(){{
+  const INTENT_BASE = "{P('/creatives')}";
+  const pickerBtn = document.getElementById('intentBarPicker');
+  const picker = document.getElementById('intentPicker');
+  const closeBtn = document.getElementById('intentPickerClose');
+  const clearBtn = document.getElementById('intentPickerClear');
+  const searchEl = document.getElementById('intentPickerSearch');
+  const listEl = document.getElementById('intentPickerList');
+  let loaded = null;
+
+  function renderList(filterText) {{
+    const term = (filterText || '').trim().toLowerCase();
+    const items = (loaded || []).filter(it => !term || it.intent.toLowerCase().includes(term));
+    if (!items.length) {{
+      listEl.innerHTML = '<div class="empty">Ничего не найдено</div>';
+      return;
+    }}
+    listEl.innerHTML = items.map(it =>
+      '<div class="intentrow" data-intent-value="' + encodeURIComponent(it.intent) + '">' +
+      '<div class="intentrow-copy"><strong></strong><span>' + it.creatives_count + ' кр. · ' + it.runs_count + ' запусков</span></div></div>'
+    ).join('');
+    listEl.querySelectorAll('.intentrow').forEach((row, i) => {{
+      row.querySelector('strong').textContent = items[i].intent;
+      row.addEventListener('click', () => {{
+        window.location.href = INTENT_BASE + '?intent=' + row.dataset.intentValue;
+      }});
+    }});
+  }}
+
+  function openPicker() {{
+    picker.hidden = false;
+    if (!loaded) {{
+      fetch("{P('/api/admin/intents')}").then(r => r.json()).then(data => {{
+        loaded = data.items || [];
+        renderList(searchEl.value);
+      }}).catch(() => {{ listEl.innerHTML = '<div class="empty">Не удалось загрузить список</div>'; }});
+    }}
+  }}
+  pickerBtn && pickerBtn.addEventListener('click', () => {{ picker.hidden ? openPicker() : (picker.hidden = true); }});
+  closeBtn && closeBtn.addEventListener('click', () => {{ picker.hidden = true; }});
+  clearBtn && clearBtn.addEventListener('click', () => {{ window.location.href = INTENT_BASE; }});
+  searchEl && searchEl.addEventListener('input', () => renderList(searchEl.value));
 }})();
 </script>"""
     return page(request, "Библиотека рекламы", body, "creatives")
