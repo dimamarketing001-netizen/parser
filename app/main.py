@@ -93,6 +93,12 @@ def P(path: str = "") -> str:
 
 @app.middleware("http")
 async def _apply_forwarded_prefix(request: Request, call_next):
+    # NOTE: this middleware runs OUTSIDE SessionMiddleware (registered
+    # after it, which — per Starlette's add_middleware() — makes it the
+    # outer layer), so request.session isn't attached yet here. Only set
+    # the ContextVar; any session-touching auto-login lives in
+    # auth_page() instead, which only ever runs from inside a route
+    # handler (fully inside the stack, session guaranteed present).
     token = _URL_PREFIX.set(request.headers.get("x-forwarded-prefix", "").rstrip("/"))
     try:
         return await call_next(request)
@@ -751,7 +757,23 @@ def esc(value: Any) -> str:
 
 
 def auth_page(request: Request) -> bool:
-    return bool(request.session.get("authenticated"))
+    if request.session.get("authenticated"):
+        return True
+    # Auto-login when reached via addAvto's own proxy: that route sits
+    # behind addAvto's Basic Auth (same login/password), so getting here
+    # at all already proves the visitor authenticated there — showing
+    # this app's OWN separate login screen on top would just be a second,
+    # confusing password prompt for no real security gain (2026-11-03,
+    # Dima: "авторизация по сути не нужна"). SAFE only because
+    # nginx-parser.conf (this app's native domain) always overwrites
+    # X-Forwarded-Prefix to empty — a client can't forge this header to
+    # self-authenticate there directly.
+    if P():
+        request.session["authenticated"] = True
+        request.session["username"] = "addavto"
+        request.session.setdefault("csrf", secrets.token_urlsafe(32))
+        return True
+    return False
 
 
 def require_admin(request: Request) -> None:
@@ -1160,7 +1182,13 @@ def login_post(
     csrf_token_value: str = Form(..., alias="csrf_token"),
 ):
     check_csrf(request, csrf_token_value)
-    if hmac.compare_digest(username, ADMIN_USER) and hmac.compare_digest(password, ADMIN_PASSWORD):
+    # hmac.compare_digest() raises TypeError on non-ASCII str input (seen
+    # live 2026-11-03: a non-Latin login attempt 500'd instead of just
+    # failing auth) — bytes comparison has no such restriction.
+    if (
+        hmac.compare_digest(username.encode("utf-8"), ADMIN_USER.encode("utf-8"))
+        and hmac.compare_digest(password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8"))
+    ):
         request.session.clear()
         request.session["authenticated"] = True
         request.session["username"] = username
