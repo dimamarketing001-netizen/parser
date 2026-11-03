@@ -155,6 +155,56 @@ input:focus,select:focus,textarea:focus{border-color:var(--violet)}
 .jobmeta strong{display:block;font-size:11px;margin-bottom:3px}
 @media(max-width:1050px){.summary,.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.creative-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.job{grid-template-columns:minmax(0,1fr) auto}.jobmeta{display:none}}
 @media(max-width:720px){.shell{grid-template-columns:1fr}aside.sidebar{display:none!important}.topbar{padding:0 18px}.content{padding:22px 16px 35px}.headline{flex-direction:column;align-items:stretch}.summary,.grid{gap:9px}.metric,.stat{padding:15px}.metric .value,.statvalue{font-size:22px}.creative-grid,.formgrid,.detail-grid{grid-template-columns:1fr}.h1{font-size:22px}.job{grid-template-columns:1fr;gap:10px}}
+
+/* Библиотека креативов — живой поиск/фильтры/закладки/сохранённые
+   поиски, см. ad-intelligence.html (фаза 2, 2026-11-03) */
+.librarycontrols{background:#fff;border:1px solid var(--line);border-radius:21px;padding:17px 18px 14px;margin-bottom:24px;box-shadow:0 5px 20px #2b294a04}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:13px}
+.search{flex:1;min-width:230px;display:flex;align-items:center;gap:9px;padding:0 13px;background:#fff;border:1px solid var(--line);border-radius:12px;height:45px;color:#9294a3}
+.search svg{width:15px;height:15px;flex-shrink:0}
+.search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:#2b2c3a;font-size:12px}
+.filter{height:45px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:0 12px;color:#45465a;outline:none;font-size:11px}
+.quickfilters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.quickfilter{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;background:transparent;color:#858799;border-radius:10px;padding:9px 12px;font:600 10px "DM Sans",sans-serif;cursor:pointer;transition:all .18s}
+.quickfilter svg{width:13px;height:13px}
+.quickfilter:hover{background:#f7f6fc;color:#5e50a9}
+.quickfilter.active{background:#f0edff;color:#7158dc;border-color:#e6e0ff}
+.activefilters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid #f0f0f5;padding-top:13px;margin-top:13px}
+.activefilters[hidden]{display:none!important}
+.activefilterlabel{font-size:9px;color:#9a9baa}
+.filterchips{display:flex;gap:7px;flex-wrap:wrap;flex:1}
+.filterchip{display:inline-flex;align-items:center;gap:9px;border:1px solid #e8e4fa;background:#f8f6ff;border-radius:8px;padding:7px 9px;color:#7059cf;font-size:10px;cursor:pointer}
+.clearfilters{border:0;background:none;color:#858799;font:600 10px "DM Sans",sans-serif;cursor:pointer}
+.clearfilters:hover{color:#7158dc}
+.resulthead{display:flex;justify-content:space-between;align-items:center;gap:15px;margin:0 0 15px}
+.resulthead p{color:var(--muted);font-size:10px;margin:0}
+.resultactions{display:flex;gap:8px;flex-wrap:wrap}
+.creative .save{position:absolute;top:12px;right:12px;z-index:3;width:34px;height:34px;border:1px solid #e4e8ec;border-radius:10px;background:#ffffffed;color:#65707d;display:grid;place-items:center;cursor:pointer}
+.creative .save svg{width:15px;height:15px}
+.creative .save.saved{background:#e6f8ed;color:var(--green-dark);border-color:#ccebd7}
+.creative-preview{position:relative}
+.creative[hidden]{display:none!important}
+.savedsearches{margin:0 0 18px;padding:16px;background:#fafbfc;border:1px solid var(--line);border-radius:15px}
+.savedsearches[hidden]{display:none!important}
+.savedsearchhead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.savedsearchhead strong{font-size:12px;color:#303743}
+.savedsearchhead p{font-size:10px;color:#838b98;line-height:1.5;margin:4px 0 0}
+.savedsearchlist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.savedsearchitem{min-width:0;display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border:1px solid #e4e7ee;border-radius:12px}
+.savedsearchbody{min-width:0;flex:1}
+.savedsearchbody strong{display:block;font-size:11px;color:#303743;overflow-wrap:anywhere}
+.savedsearchbody span{display:block;font-size:10px;color:#858c99;line-height:1.5;margin-top:4px;overflow-wrap:anywhere}
+.savedsearchactions{display:flex;gap:5px;flex-shrink:0}
+.savedsearchactions button{width:31px;height:31px;border:1px solid #e6e8ee;border-radius:8px;background:#fff;color:#586273;display:grid;place-items:center;cursor:pointer}
+.savedsearchactions button svg{width:13px;height:13px}
+.savedsearchactions button[data-delete-saved-search]{color:#c0392b}
+.empty-filter{grid-column:1/-1;padding:55px 22px;text-align:center;border:1px dashed #dedbea;border-radius:22px;background:#fff}
+.empty-filter[hidden]{display:none!important}
+.empty-filter-icon{display:grid;place-items:center;width:52px;height:52px;margin:0 auto 15px;border-radius:17px;background:#f0edff;color:#8066e8}
+.empty-filter-icon svg{width:23px;height:23px}
+.empty-filter h3{font:800 17px Manrope,sans-serif;letter-spacing:-.04em;color:#2b2c39;margin:0 0 8px}
+.empty-filter p{font-size:11px;line-height:1.7;color:#8c8e9f;max-width:410px;margin:0 auto 18px}
+@media(max-width:760px){.librarycontrols{padding:13px;border-radius:18px}.toolbar{flex-wrap:wrap}.search{min-width:100%}.savedsearchlist{grid-template-columns:1fr}}
 """
 
 
@@ -1499,32 +1549,196 @@ def run_detail(request: Request, job_id: int):
 
 
 @app.get("/creatives", response_class=HTMLResponse)
-def creatives_page(request: Request, q: str = "", platform: str = "", status: str = ""):
+def creatives_page(request: Request):
     redirect = admin_or_redirect(request)
     if redirect:
         return redirect
-    where, params = [], []
-    if q.strip():
-        like = "%" + q.strip()[:150] + "%"
-        where.append("(title LIKE ? OR domain LIKE ? OR description LIKE ? OR platform LIKE ?)")
-        params.extend([like, like, like, like])
-    if platform:
-        where.append("platform=?")
-        params.append(platform[:255])
-    if status:
-        where.append("recognition_status=?")
-        params.append(status[:32])
-    where_sql = " WHERE " + " AND ".join(where) if where else ""
     with closing(connect()) as db:
         platforms = db.execute("SELECT DISTINCT platform FROM creatives ORDER BY platform").fetchall()
-        total = db.execute("SELECT COUNT(*) n FROM creatives" + where_sql, params).fetchone()["n"]
-        items = db.execute("SELECT * FROM creatives" + where_sql + " ORDER BY captured_at DESC LIMIT 150", params).fetchall()
-    platform_options = '<option value="">Все площадки</option>' + "".join(f'<option value="{esc(p["platform"])}" {"selected" if platform == p["platform"] else ""}>{esc(p["platform"])}</option>' for p in platforms)
+        items = db.execute("SELECT * FROM creatives ORDER BY captured_at DESC LIMIT 300").fetchall()
+    platform_options = '<option value="all">Все площадки</option>' + "".join(f'<option value="{esc(p["platform"])}">{esc(p["platform"])}</option>' for p in platforms)
     cards = []
     for item in items:
         preview = f'<img src="{esc(item["image_url"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if item["image_url"] and item["image_url"].startswith(("https://", "http://")) else '<span class="muted">HTML-креатив</span>'
-        cards.append(f'<article class="card creative"><a class="creative-preview" href="{P("/creatives/")}{item["id"]}">{preview}</a><div class="creative-info"><h3><a href="{P("/creatives/")}{item["id"]}">{esc(item["title"] or item["domain"] or "Без заголовка")}</a></h3><div class="muted">{esc(item["platform"])} · {esc(item["domain"] or "домен не определён")}</div><div class="creative-meta"><span class="badge">{esc(item["detection_method"])}</span><span class="badge {"ok" if item["recognition_status"] == "recognized" else "running"}">{esc(item["recognition_status"])}</span></div><div class="muted">{esc(item["captured_at"])}</div></div></article>')
-    body = f"""<div class="panel"><form method="get" action="{P('/creatives')}" class="filters"><input name="q" placeholder="Поиск по тексту / домену" value="{esc(q)}"><select name="platform">{platform_options}</select><select name="status"><option value="">Все статусы</option><option value="recognized" {"selected" if status=="recognized" else ""}>recognized</option><option value="partial" {"selected" if status=="partial" else ""}>partial</option></select><button class="btn">Фильтровать</button><a class="btn secondary" href="{P('/creatives')}">Сбросить</a><span class="muted">Всего: {total}</span></form><div class="creative-grid">{''.join(cards) if cards else '<div class="empty">Креативы пока не синхронизированы с WSL. Убедитесь, что воркер подключён и MySQL-доступ настроен.</div>'}</div></div>"""
+        search_blob = esc(" ".join(filter(None, [item["title"], item["domain"], item["description"], item["platform"]])).lower())
+        cards.append(
+            f'<article class="card creative" data-platform="{esc(item["platform"])}" data-status="{esc(item["recognition_status"])}" data-id="{item["id"]}" data-search="{search_blob}">'
+            f'<div class="creative-preview"><a href="{P("/creatives/")}{item["id"]}">{preview}</a><button type="button" class="save" data-save-id="{item["id"]}" aria-label="Сохранить креатив"><i data-lucide="bookmark"></i></button></div>'
+            f'<div class="creative-info"><h3><a href="{P("/creatives/")}{item["id"]}">{esc(item["title"] or item["domain"] or "Без заголовка")}</a></h3>'
+            f'<div class="muted">{esc(item["platform"])} · {esc(item["domain"] or "домен не определён")}</div>'
+            f'<div class="creative-meta"><span class="badge">{esc(item["detection_method"])}</span><span class="badge {"ok" if item["recognition_status"] == "recognized" else "running"}">{esc(item["recognition_status"])}</span></div>'
+            f'<div class="muted">{esc(item["captured_at"])}</div></div></article>'
+        )
+    body = f"""<div class="librarycontrols">
+  <div class="toolbar">
+    <label class="search"><i data-lucide="search"></i><input id="libQuery" placeholder="Поиск по тексту, домену или площадке…" autocomplete="off"></label>
+    <select class="filter" id="libPlatform">{platform_options}</select>
+    <select class="filter" id="libStatus"><option value="all">Все статусы</option><option value="recognized">recognized</option><option value="partial">partial</option></select>
+    <button class="secondary" type="button" id="libReset"><i data-lucide="rotate-ccw"></i> Сбросить</button>
+  </div>
+  <div class="quickfilters">
+    <button class="quickfilter active" type="button" data-quick="all">Все креативы</button>
+    <button class="quickfilter" type="button" data-quick="saved"><i data-lucide="bookmark"></i> Сохранённые</button>
+  </div>
+  <div class="activefilters" id="libActiveFilters" hidden><span class="activefilterlabel">Активные фильтры</span><div class="filterchips" id="libFilterChips"></div><button class="clearfilters" type="button" id="libClearFilters">Очистить всё</button></div>
+</div>
+<div class="savedsearches" id="libSavedSearches" hidden>
+  <div class="savedsearchhead"><div><strong>Сохранённые поиски</strong><p>Наборы фильтров хранятся в этом браузере.</p></div></div>
+  <div class="savedsearchlist" id="libSavedSearchList"></div>
+</div>
+<div class="resulthead">
+  <div><h2>Библиотека рекламных креативов</h2><p id="libResultCount" aria-live="polite">{len(items)} креативов</p></div>
+  <div class="resultactions">
+    <button class="secondary" type="button" id="libSaveSearch"><i data-lucide="bookmark-plus"></i> Сохранить поиск</button>
+    <button class="secondary" type="button" id="libExport"><i data-lucide="download"></i> Экспорт JSON</button>
+  </div>
+</div>
+<div class="empty-filter" id="libEmptyFilter" hidden><div class="empty-filter-icon"><i data-lucide="search-x"></i></div><h3>Ничего не найдено</h3><p>По текущему запросу и фильтрам нет совпадений.</p><button class="secondary" type="button" id="libEmptyReset">Очистить поиск и фильтры</button></div>
+<div class="creative-grid" id="libCards">{''.join(cards) if cards else '<div class="empty">Креативы пока не синхронизированы с WSL. Убедитесь, что воркер подключён и MySQL-доступ настроен.</div>'}</div>
+<script>
+(function(){{
+  const cards = Array.from(document.querySelectorAll('#libCards .creative'));
+  const queryEl = document.getElementById('libQuery');
+  const platformEl = document.getElementById('libPlatform');
+  const statusEl = document.getElementById('libStatus');
+  const resultCount = document.getElementById('libResultCount');
+  const emptyFilter = document.getElementById('libEmptyFilter');
+  const activeFilters = document.getElementById('libActiveFilters');
+  const filterChips = document.getElementById('libFilterChips');
+  let quickMode = 'all';
+
+  function savedIds() {{
+    try {{ return JSON.parse(localStorage.getItem('parsya_saved_creatives') || '[]'); }} catch(e) {{ return []; }}
+  }}
+  function setSavedIds(ids) {{
+    localStorage.setItem('parsya_saved_creatives', JSON.stringify(ids));
+  }}
+  function refreshSaveButtons() {{
+    const ids = savedIds().map(String);
+    document.querySelectorAll('[data-save-id]').forEach(btn => {{
+      btn.classList.toggle('saved', ids.includes(btn.dataset.saveId));
+    }});
+  }}
+  document.querySelectorAll('[data-save-id]').forEach(btn => {{
+    btn.addEventListener('click', (e) => {{
+      e.preventDefault(); e.stopPropagation();
+      const id = btn.dataset.saveId;
+      let ids = savedIds().map(String);
+      if (ids.includes(id)) ids = ids.filter(x => x !== id); else ids.push(id);
+      setSavedIds(ids);
+      refreshSaveButtons();
+      applyFilters();
+    }});
+  }});
+
+  function applyFilters() {{
+    const q = (queryEl.value || '').trim().toLowerCase();
+    const platform = platformEl.value;
+    const status = statusEl.value;
+    const saved = savedIds().map(String);
+    let visible = 0;
+    cards.forEach(card => {{
+      let ok = true;
+      if (q && !card.dataset.search.includes(q)) ok = false;
+      if (platform !== 'all' && card.dataset.platform !== platform) ok = false;
+      if (status !== 'all' && card.dataset.status !== status) ok = false;
+      if (quickMode === 'saved' && !saved.includes(card.dataset.id)) ok = false;
+      card.hidden = !ok;
+      if (ok) visible++;
+    }});
+    resultCount.textContent = visible + ' ' + (visible % 10 === 1 && visible % 100 !== 11 ? 'креатив' : (visible % 10 >= 2 && visible % 10 <= 4 && (visible % 100 < 10 || visible % 100 >= 20) ? 'креатива' : 'креативов'));
+    emptyFilter.hidden = visible !== 0;
+    const chips = [];
+    if (q) chips.push(['Запрос: «' + q + '»', () => {{ queryEl.value = ''; }}]);
+    if (platform !== 'all') chips.push(['Площадка: ' + platform, () => {{ platformEl.value = 'all'; }}]);
+    if (status !== 'all') chips.push(['Статус: ' + status, () => {{ statusEl.value = 'all'; }}]);
+    activeFilters.hidden = chips.length === 0;
+    filterChips.innerHTML = '';
+    chips.forEach(([label, clear]) => {{
+      const chip = document.createElement('span');
+      chip.className = 'filterchip';
+      chip.innerHTML = label + ' <span>&times;</span>';
+      chip.addEventListener('click', () => {{ clear(); applyFilters(); }});
+      filterChips.appendChild(chip);
+    }});
+  }}
+
+  let debounce = null;
+  queryEl.addEventListener('input', () => {{ clearTimeout(debounce); debounce = setTimeout(applyFilters, 150); }});
+  platformEl.addEventListener('change', applyFilters);
+  statusEl.addEventListener('change', applyFilters);
+  document.getElementById('libReset').addEventListener('click', () => {{
+    queryEl.value = ''; platformEl.value = 'all'; statusEl.value = 'all'; quickMode = 'all';
+    document.querySelectorAll('.quickfilter').forEach(b => b.classList.toggle('active', b.dataset.quick === 'all'));
+    applyFilters();
+  }});
+  document.getElementById('libClearFilters').addEventListener('click', () => document.getElementById('libReset').click());
+  document.getElementById('libEmptyReset').addEventListener('click', () => document.getElementById('libReset').click());
+  document.querySelectorAll('.quickfilter').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      quickMode = btn.dataset.quick;
+      document.querySelectorAll('.quickfilter').forEach(b => b.classList.toggle('active', b === btn));
+      applyFilters();
+    }});
+  }});
+
+  function loadSavedSearches() {{
+    try {{ return JSON.parse(localStorage.getItem('parsya_saved_searches') || '[]'); }} catch(e) {{ return []; }}
+  }}
+  function renderSavedSearches() {{
+    const list = loadSavedSearches();
+    const panel = document.getElementById('libSavedSearches');
+    const container = document.getElementById('libSavedSearchList');
+    panel.hidden = list.length === 0;
+    container.innerHTML = '';
+    list.forEach((s, i) => {{
+      const item = document.createElement('div');
+      item.className = 'savedsearchitem';
+      item.innerHTML = '<div class="savedsearchbody"><strong></strong><span></span></div><div class="savedsearchactions"><button type="button" data-apply-saved-search="' + i + '"><i data-lucide="play"></i></button><button type="button" data-delete-saved-search="' + i + '"><i data-lucide="trash-2"></i></button></div>';
+      item.querySelector('strong').textContent = s.name;
+      item.querySelector('span').textContent = [s.q && ('«' + s.q + '»'), s.platform !== 'all' && s.platform, s.status !== 'all' && s.status].filter(Boolean).join(' · ') || 'Без фильтров';
+      container.appendChild(item);
+    }});
+    container.querySelectorAll('[data-apply-saved-search]').forEach(btn => btn.addEventListener('click', () => {{
+      const s = loadSavedSearches()[Number(btn.dataset.applySavedSearch)];
+      if (!s) return;
+      queryEl.value = s.q || ''; platformEl.value = s.platform || 'all'; statusEl.value = s.status || 'all';
+      applyFilters();
+    }}));
+    container.querySelectorAll('[data-delete-saved-search]').forEach(btn => btn.addEventListener('click', () => {{
+      const list2 = loadSavedSearches();
+      list2.splice(Number(btn.dataset.deleteSavedSearch), 1);
+      localStorage.setItem('parsya_saved_searches', JSON.stringify(list2));
+      renderSavedSearches();
+      if (window.lucide) lucide.createIcons();
+    }}));
+    if (window.lucide) lucide.createIcons();
+  }}
+  document.getElementById('libSaveSearch').addEventListener('click', () => {{
+    const name = prompt('Название сохранённого поиска:');
+    if (!name) return;
+    const list = loadSavedSearches();
+    list.push({{name: name, q: queryEl.value, platform: platformEl.value, status: statusEl.value}});
+    localStorage.setItem('parsya_saved_searches', JSON.stringify(list));
+    renderSavedSearches();
+  }});
+  document.getElementById('libExport').addEventListener('click', () => {{
+    const visible = cards.filter(c => !c.hidden).map(c => ({{
+      id: c.dataset.id, platform: c.dataset.platform, status: c.dataset.status,
+      title: c.querySelector('h3 a') ? c.querySelector('h3 a').textContent : '',
+    }}));
+    const blob = new Blob([JSON.stringify(visible, null, 2)], {{type: 'application/json'}});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'creatives-export.json';
+    a.click();
+  }});
+
+  refreshSaveButtons();
+  renderSavedSearches();
+  applyFilters();
+}})();
+</script>"""
     return page(request, "Библиотека рекламы", body, "creatives")
 
 
