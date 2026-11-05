@@ -17,13 +17,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import snowballstemmer
 
 from app import embeddings as emb
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -41,6 +42,12 @@ PUBLIC_API_TOKEN = os.getenv("PARSYA_PUBLIC_API_TOKEN", "")
 # distinct from WORKER_TOKEN so a leak on addAvto's side can't reach job
 # management. Optional: unset simply means these endpoints always 401.
 ADDAVTO_TOKEN = os.getenv("PARSYA_ADDAVTO_TOKEN", "")
+# Outbound direction: this server proxying the marketer frontend's calls INTO
+# addAvto's own API (separate domain, HTTP Basic auth, no CORS of its own).
+# Optional: unset means the /api/v1/ads/* proxy always responds 503.
+ADDAVTO_BASE_URL = os.getenv("PARSYA_ADDAVTO_BASE_URL", "").rstrip("/")
+ADDAVTO_ADMIN_USER = os.getenv("PARSYA_ADDAVTO_ADMIN_USER", "")
+ADDAVTO_ADMIN_PASSWORD = os.getenv("PARSYA_ADDAVTO_ADMIN_PASSWORD", "")
 SECRET_KEY = os.getenv("PARSYA_SECRET_KEY", "")
 COOKIE_SECURE = os.getenv("PARSYA_COOKIE_SECURE", "1").strip().lower() in {"1", "true", "yes"}
 MAX_HTML_CHARS = 2_000_000
@@ -3332,6 +3339,40 @@ def api_remove_collection_item(collection_id: int, group_key: str, principal: di
         db.execute("DELETE FROM collection_items WHERE collection_id=? AND group_key=?", (collection_id, group_key))
         db.commit()
     return {"ok": True}
+
+
+_ADDAVTO_METHODS = {"GET", "POST", "PUT", "DELETE"}
+
+
+@app.api_route("/api/v1/ads/{path:path}", methods=sorted(_ADDAVTO_METHODS))
+async def api_ads_proxy(path: str, request: Request, principal: dict = Depends(public_api_principal)):
+    """Transparent proxy into addAvto's own API (separate domain, HTTP Basic
+    auth, no CORS) so the marketer frontend can call it under its own
+    bearer-token session without addAvto's backend having to change at all.
+    `/api/v1/ads/<rest>` maps straight onto addAvto's `/api/<rest>` — no
+    per-route reshaping, since addAvto's REST surface is already a clean
+    fit (projects, accounts, clickru-connections, metrika/connections,
+    report, ...). Errors (404/409/422/...) pass through as-is so the
+    frontend can surface addAvto's real validation messages."""
+    require_user_principal(principal)
+    if not ADDAVTO_BASE_URL or not ADDAVTO_ADMIN_USER or not ADDAVTO_ADMIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="addAvto integration is not configured (PARSYA_ADDAVTO_BASE_URL/ADMIN_USER/ADMIN_PASSWORD)")
+    body = await request.body()
+    try:
+        async with httpx.AsyncClient(auth=(ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD), timeout=30.0) as client:
+            upstream = await client.request(
+                request.method,
+                f"{ADDAVTO_BASE_URL}/api/{path}",
+                params=list(request.query_params.multi_items()),
+                content=body or None,
+                headers={"content-type": request.headers.get("content-type", "application/json")},
+            )
+    except httpx.RequestError as err:
+        raise HTTPException(status_code=502, detail=f"addAvto unreachable: {err}") from err
+    content_type = upstream.headers.get("content-type", "")
+    if "application/json" in content_type:
+        return JSONResponse(content=upstream.json(), status_code=upstream.status_code)
+    return JSONResponse(content={"detail": upstream.text[:2000]}, status_code=upstream.status_code)
 
 
 @app.get("/api/v1/coverage")
