@@ -304,6 +304,34 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def create_notification(db, user_id: int | None, type_: str, title: str, text: str = "", link: str = "") -> None:
+    """Inserts an in-app notification for one user, unless they've muted this type in
+    users.notification_prefs (JSON {type: bool}; a type absent from the JSON, or no prefs
+    saved at all, defaults to enabled — opt-out, not opt-in). Caller is expected to be
+    inside an existing db transaction; this does not commit.
+
+    user_id can legitimately be unknown (e.g. a job whose owner_user_id is NULL, from
+    before SaaS accounts existed) — silently no-ops rather than erroring, since a
+    notification with no recipient has nowhere to go."""
+    if not user_id:
+        return
+    row = db.execute("SELECT notification_prefs FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        return
+    prefs = {}
+    if row["notification_prefs"]:
+        try:
+            prefs = json.loads(row["notification_prefs"])
+        except (TypeError, ValueError):
+            prefs = {}
+    if prefs.get(type_) is False:
+        return
+    db.execute(
+        "INSERT INTO notifications(user_id,type,title,text,link,created_at) VALUES(?,?,?,?,?,?)",
+        (user_id, type_, title, text or None, link or None, now_iso()),
+    )
+
+
 def _pylower(value: str | None) -> str:
     # SQLite's built-in LOWER()/COLLATE NOCASE only fold ASCII A-Z — useless for the
     # Russian search queries (key_text) that "intent" filtering matches on. Registered
@@ -876,7 +904,31 @@ def init_db() -> None:
           FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS ix_user_tokens_user ON user_tokens(user_id);
+
+        -- In-app notification center (2026-11-06). One row per event per recipient; a
+        -- user's own notification_prefs (on the users table) gate whether a given type
+        -- gets inserted at all, so this table never accumulates rows for muted types.
+        CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          text TEXT,
+          link TEXT,
+          created_at TEXT NOT NULL,
+          read_at TEXT,
+          FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_notifications_user ON notifications(user_id, created_at DESC);
         """)
+        # Profile fields added 2026-11-06 (display name, avatar as a small data: URL —
+        # avatars are resized client-side to a tiny square before upload, so storing them
+        # inline keeps this simple without a static-file-serving route; notification_prefs
+        # is a JSON object of {type: bool}, missing/absent type defaults to enabled).
+        existing_user_cols = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+        for col, coltype in (("name", "TEXT"), ("avatar_data_url", "TEXT"), ("notification_prefs", "TEXT")):
+            if col not in existing_user_cols:
+                db.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
         # content_fingerprint groups creative rows that are the same image/text/title
         # creative re-detected under a different creative_hash (e.g. a different platform
         # markup or a different campaign run). ALTER TABLE ADD COLUMN has no IF NOT EXISTS
@@ -1311,6 +1363,20 @@ class CreateUserIn(BaseModel):
 class ChangePasswordIn(BaseModel):
     current_password: str = Field(min_length=1, max_length=200)
     new_password: str = Field(min_length=8, max_length=200)
+
+
+class ProfileUpdateIn(BaseModel):
+    name: str = Field(default="", max_length=200)
+
+
+class AvatarUploadIn(BaseModel):
+    # A small data: URL (client resizes to a square thumbnail before sending) — see
+    # create_notification's neighboring note on why this isn't a static file upload.
+    data_url: str = Field(default="", max_length=400_000)
+
+
+class NotificationPrefsIn(BaseModel):
+    prefs: dict[str, bool] = Field(default_factory=dict)
 
 
 class RunCreateIn(BaseModel):
@@ -2305,22 +2371,33 @@ def worker_landing_mismatch(job_id: int, payload: LandingMismatchBatch, authoriz
     worker_auth(authorization)
     accepted = 0
     with closing(connect()) as db:
-        job = db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        job = db.execute("SELECT id,owner_user_id FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         for item in payload.items:
             creative_hash = item.creative_hash.strip()
             if not creative_hash:
                 continue
-            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
+            row = db.execute("SELECT id,title,domain FROM creatives WHERE creative_hash=?", (creative_hash,)).fetchone()
             if not row:
                 continue
+            was_mismatch = db.execute(
+                "SELECT landing_domain_mismatch FROM creative_utm WHERE creative_id=?", (row["id"],)
+            ).fetchone()
+            is_new_mismatch = bool(item.landing_domain_mismatch) and not (was_mismatch and was_mismatch["landing_domain_mismatch"])
             result = db.execute(
                 "UPDATE creative_utm SET advertised_site_domain=?, landing_domain_mismatch=? WHERE creative_id=?",
                 (item.advertised_site_domain, 1 if item.landing_domain_mismatch else 0, row["id"]),
             )
             if result.rowcount:
                 accepted += 1
+                if is_new_mismatch:
+                    create_notification(
+                        db, job["owner_user_id"], "landing_mismatch",
+                        f"Несовпадение посадочной: «{row['title'] or row['domain'] or creative_hash}»",
+                        f"Реклама ведёт не на {item.advertised_site_domain or 'сайт рекламодателя'}",
+                        "intel-advertisers",
+                    )
         db.commit()
     return {"ok": True, "accepted": accepted}
 
@@ -2488,7 +2565,7 @@ def worker_site_results(job_id: int, payload: SiteResultsBatch, authorization: s
 def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = Header(default=None)):
     worker_auth(authorization)
     with closing(connect()) as db:
-        job = db.execute("SELECT worker_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        job = db.execute("SELECT worker_id,owner_user_id,key_text,city FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         db.execute(
@@ -2499,6 +2576,14 @@ def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = He
         if job["worker_id"]:
             db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=?,last_error=? WHERE worker_id=?",
                        (now_iso(), payload.error or None, job["worker_id"]))
+        label = job["key_text"] or f"№{job_id}"
+        if payload.status == "succeeded":
+            total = db.execute("SELECT total_creatives FROM jobs WHERE id=?", (job_id,)).fetchone()["total_creatives"]
+            create_notification(db, job["owner_user_id"], "scan_done", f"Сканирование «{label}» завершено",
+                                 f"{job['city'] or ''} · найдено {total or 0}".strip(" ·"), f"intel-scans")
+        elif payload.status == "failed":
+            create_notification(db, job["owner_user_id"], "scan_failed", f"Сканирование «{label}» завершилось с ошибкой",
+                                 payload.error or "", "intel-scans")
         db.commit()
     return {"ok": True}
 
@@ -2604,6 +2689,12 @@ def worker_browser_state(job_id: int, payload: BrowserStateIn, authorization: st
             (job_id, 1 if payload.active else 0, 1 if payload.captcha_required else 0, payload.url, payload.title,
              payload.screenshot_b64, payload.viewport_width, payload.viewport_height, now),
         )
+        if should_notify:
+            job = db.execute("SELECT owner_user_id,key_text FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if job:
+                create_notification(db, job["owner_user_id"], "captcha_required",
+                                     f"Нужна помощь: капча в задании «{job['key_text'] or job_id}»",
+                                     "Откройте задание и решите капчу вручную", "intel-scans")
         db.commit()
     telegram_notified = False
     if should_notify:
@@ -3198,6 +3289,82 @@ def api_change_password(payload: ChangePasswordIn, principal: dict = Depends(pub
     return {"ok": True}
 
 
+@app.get("/api/v1/profile")
+def api_get_profile(principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        row = db.execute(
+            "SELECT email,role,name,avatar_data_url,notification_prefs FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+    prefs = {}
+    if row["notification_prefs"]:
+        try:
+            prefs = json.loads(row["notification_prefs"])
+        except (TypeError, ValueError):
+            prefs = {}
+    return {
+        "email": row["email"], "role": row["role"], "name": row["name"] or "",
+        "avatar_data_url": row["avatar_data_url"] or "", "notification_prefs": prefs,
+    }
+
+
+@app.patch("/api/v1/profile")
+def api_update_profile(payload: ProfileUpdateIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        db.execute("UPDATE users SET name=? WHERE id=?", (payload.name.strip()[:200] or None, user_id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/profile/avatar")
+def api_upload_avatar(payload: AvatarUploadIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    data_url = payload.data_url.strip()
+    if data_url and not data_url.startswith("data:image/"):
+        raise HTTPException(status_code=422, detail="Ожидается изображение (data: URL)")
+    with closing(connect()) as db:
+        db.execute("UPDATE users SET avatar_data_url=? WHERE id=?", (data_url or None, user_id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.put("/api/v1/profile/notification-prefs")
+def api_set_notification_prefs(payload: NotificationPrefsIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        db.execute("UPDATE users SET notification_prefs=? WHERE id=?", (json.dumps(payload.prefs), user_id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/notifications")
+def api_list_notifications(limit: int = 30, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    limit = max(1, min(limit, 100))
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT id,type,title,text,link,created_at,read_at FROM notifications WHERE user_id=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+        unread = db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL", (user_id,)
+        ).fetchone()[0]
+    return {"items": [dict(r) for r in rows], "unread_count": unread}
+
+
+@app.post("/api/v1/notifications/read-all")
+def api_mark_all_notifications_read(principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        db.execute("UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL", (now_iso(), user_id))
+        db.commit()
+    return {"ok": True}
+
+
 @app.post("/api/v1/runs")
 def api_create_run(payload: RunCreateIn, principal: dict = Depends(public_api_principal)):
     """Lets a logged-in SaaS user queue a scan with their own parameters, self-service —
@@ -3274,6 +3441,8 @@ def api_create_collection(payload: CollectionCreateIn, principal: dict = Depends
             (user_id, payload.name.strip(), payload.description.strip(), now_iso()),
         )
         collection_id = cur.lastrowid
+        create_notification(db, user_id, "collection_created", f"Подборка «{payload.name.strip()}» создана",
+                             "", "intel-collections")
         db.commit()
     return {"id": collection_id, "name": payload.name.strip()}
 
