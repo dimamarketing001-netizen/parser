@@ -98,3 +98,19 @@ def test_ozon_captcha_view_requires_user(monkeypatch):
     monkeypatch.setattr(m, "ADDAVTO_TOKEN", TOKEN)
     m.app.dependency_overrides.clear()
     assert client.get(f"/api/v1/ozon-captcha/{SID}").status_code in (401, 503)
+
+
+def test_gemini_gateway(monkeypatch):
+    _setup(monkeypatch)
+    seen = {}
+
+    async def fake(model, body, timeout=300.0):
+        seen.update(model=model, body=body)
+        return 429, {"error": {"message": "quota"}}
+
+    monkeypatch.setattr(m, "gemini_generate_content", fake)
+    assert client.post("/api/addavto/gemini/generate", json={"model": "x", "body": {}}).status_code == 401
+    assert client.post("/api/addavto/gemini/generate", headers=A, json={"model": "../x", "body": {}}).status_code == 422
+    r = client.post("/api/addavto/gemini/generate", headers=A, json={"model": "gemini-3.8-flash", "body": {"contents": []}})
+    assert r.status_code == 429 and r.json()["error"]["message"] == "quota"  # статус Google как есть
+    assert seen == {"model": "gemini-3.8-flash", "body": {"contents": []}}

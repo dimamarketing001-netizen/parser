@@ -2969,6 +2969,57 @@ def addavto_clickru_web_login(
 
 
 # ---------------------------------------------------------------------------
+# Единый шлюз Gemini для addAvto (2026-11-10, Dima: «запросы к Gemini — так же,
+# как на беке в WSL, через одну функцию»). Ключ GEMINI_API_KEY живёт только
+# здесь, в .env parsya-control; сеть до Google — через WireGuard wg-gemini
+# (см. app/embeddings.py), прод-сервер ни ключа, ни прокси не знает.
+# addAvto шлёт сюда готовое тело generateContent и получает ответ Google как
+# есть (статус тоже) — ретраи и запасные модели остаются на его стороне.
+# ---------------------------------------------------------------------------
+GEMINI_GENERATE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+_GEMINI_MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+async def gemini_generate_content(model: str, body: dict[str, Any], timeout: float = 300.0) -> tuple[int, Any]:
+    """Один запрос generateContent с ключом и сетью WSL. Возвращает (HTTP-статус,
+    JSON-ответ Google или {"error": текст}). Не бросает на 4xx/5xx Google —
+    решение (ретрай, другая модель) принимает вызывающий."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return 503, {"error": {"message": "GEMINI_API_KEY не задан в .env parsya-control"}}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            GEMINI_GENERATE_URL.format(model=model), json=body,
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        )
+    try:
+        return resp.status_code, resp.json()
+    except ValueError:
+        return resp.status_code, {"error": {"message": resp.text[:2000]}}
+
+
+@app.post("/api/addavto/gemini/generate")
+async def addavto_gemini_generate(payload: dict[str, Any] | None = None, authorization: str | None = Header(default=None)):
+    """Тело: {model, body} — body это тело generateContent как есть. Ответ —
+    ответ Google с тем же статусом. 504 — Google не ответил за 300 с."""
+    addavto_auth(authorization)
+    payload = payload or {}
+    model = str(payload.get("model") or "")
+    if not _GEMINI_MODEL_RE.match(model):
+        raise HTTPException(status_code=422, detail="Некорректное имя модели Gemini")
+    body = payload.get("body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body должен быть объектом generateContent")
+    try:
+        status_code, data = await gemini_generate_content(model, body)
+    except httpx.TimeoutException:
+        return JSONResponse(status_code=504, content={"error": {"message": "Gemini не ответил за 300 с (WSL)"}})
+    except httpx.HTTPError as exc:
+        return JSONResponse(status_code=502, content={"error": {"message": f"Сеть WSL → Gemini: {type(exc).__name__}: {exc}"}})
+    return JSONResponse(status_code=status_code, content=data)
+
+
+# ---------------------------------------------------------------------------
 # addAvto «Директ Озон»: карточка Ozon через настоящий Chrome здесь, в WSL
 # (2026-11-10). С IP прод-сервера Ozon отдаёт 403 любому браузеру; Chrome,
 # запущенный процессом с --remote-debugging-port, с графикой WSLg и домашним
