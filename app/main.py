@@ -2982,14 +2982,22 @@ def addavto_open_pool_browser(payload: dict[str, Any] | None = None, authorizati
     url = _POOL_BROWSER_TARGETS.get(str(payload.get("target") or "metrika"))
     if url is None:
         raise HTTPException(status_code=422, detail="target: metrika или direct")
+    # Директ аккаунта Click.ru (porg-…) — организация, где пуловый ID
+    # «Участник»: скрипт выберет её в Яндекс ID и откроет Директ с ulogin.
+    org_login = str(payload.get("org_login") or "")
+    if org_login:
+        if not _POOL_LOGIN_RE.match(org_login):
+            raise HTTPException(status_code=422, detail="Некорректный логин организации")
+        url = f"https://direct.yandex.ru/dna/grid/campaigns?ulogin={org_login}"
     cookies = _pool_login_cookies(login)
     result, error, _ = _run_addavto_selenium_script(
-        "open_pool_browser.py", [], {"login": login, "cookies": cookies, "url": url},
-        90, "Chrome не открылся за 90 с",
+        "open_pool_browser.py", [], {"login": login, "cookies": cookies, "url": url, "org_login": org_login},
+        150, "Chrome не открылся за 150 с",
     )
     if error is not None:
         raise HTTPException(status_code=502, detail=error.get("error", "Не удалось открыть Chrome"))
-    return {"ok": True, "logged_in": bool(result.get("logged_in")), "url": result.get("url")}
+    return {"ok": True, "logged_in": bool(result.get("logged_in")), "url": result.get("url"),
+            "error": result.get("error") or ""}
 
 
 @app.post("/api/addavto/clickru-web-login")

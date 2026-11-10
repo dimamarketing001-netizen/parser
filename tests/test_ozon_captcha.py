@@ -137,3 +137,17 @@ def test_open_pool_browser(monkeypatch):
     assert stdin["url"] == "https://metrika.yandex.ru/list"
     bad = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "pool1", "target": "https://evil"})
     assert bad.status_code == 422
+
+
+def test_open_pool_browser_direct_org(monkeypatch):
+    _setup(monkeypatch)
+    calls = []
+    monkeypatch.setattr(m, "_pool_login_cookies", lambda login: [{"name": "Session_id", "value": "x", "domain": ".yandex.ru"}])
+    monkeypatch.setattr(m, "_run_addavto_selenium_script",
+                        lambda script, args, stdin, timeout, detail: (calls.append(stdin) or ({"ok": True, "logged_in": True, "url": "u"}, None, "")))
+    r = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "pool1", "target": "direct", "org_login": "porg-abc123"})
+    assert r.status_code == 200 and r.json()["logged_in"] is True
+    assert calls[0]["org_login"] == "porg-abc123"
+    assert calls[0]["url"] == "https://direct.yandex.ru/dna/grid/campaigns?ulogin=porg-abc123"
+    bad = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "pool1", "target": "direct", "org_login": "porg x&y"})
+    assert bad.status_code == 422
