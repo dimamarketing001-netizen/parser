@@ -2937,6 +2937,61 @@ def addavto_provision_direct_account(
     return result
 
 
+_POOL_LOGIN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _pool_login_cookies(login: str) -> list[dict[str, Any]]:
+    import mysql.connector
+    conn = mysql.connector.connect(**_yandex_pool_mysql_config())
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT cookies_json FROM yandex_accounts WHERE login=%s", (login,))
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден в пуле ParsYa")
+    try:
+        cookies = json.loads(row.get("cookies_json") or "[]")
+    except ValueError:
+        cookies = []
+    if not cookies:
+        raise HTTPException(status_code=409, detail="У аккаунта в пуле нет сохранённой сессии Яндекса")
+    return cookies
+
+
+_POOL_BROWSER_TARGETS = {
+    "metrika": "https://metrika.yandex.ru/list",
+    "direct": "https://direct.yandex.ru/dna/grid/campaigns",
+}
+
+
+@app.post("/api/addavto/open-pool-browser")
+def addavto_open_pool_browser(payload: dict[str, Any] | None = None, authorization: str | None = Header(default=None)):
+    """ЛК «Реклама» → проект → аккаунт → «Метрика в браузере» (2026-11-10):
+    сервис Яндекса пулового логина в Chrome на этом ПК с его cookies из
+    пула — глазами проверить, что сделал скрипт (счётчик и цель создаются
+    в Метрике пулового Yandex ID). Окно остаётся открытым; каждый раз
+    отдельный временный профиль (open_pool_browser.py). Какие логины можно
+    открывать, решает addAvto (только аккаунты кампаний проекта)."""
+    addavto_auth(authorization)
+    payload = payload or {}
+    login = str(payload.get("login") or "")
+    if not _POOL_LOGIN_RE.match(login):
+        raise HTTPException(status_code=422, detail="Некорректный логин")
+    url = _POOL_BROWSER_TARGETS.get(str(payload.get("target") or "metrika"))
+    if url is None:
+        raise HTTPException(status_code=422, detail="target: metrika или direct")
+    cookies = _pool_login_cookies(login)
+    result, error, _ = _run_addavto_selenium_script(
+        "open_pool_browser.py", [], {"login": login, "cookies": cookies, "url": url},
+        90, "Chrome не открылся за 90 с",
+    )
+    if error is not None:
+        raise HTTPException(status_code=502, detail=error.get("error", "Не удалось открыть Chrome"))
+    return {"ok": True, "logged_in": bool(result.get("logged_in")), "url": result.get("url")}
+
+
 @app.post("/api/addavto/clickru-web-login")
 def addavto_clickru_web_login(
     payload: dict[str, Any] | None = None,

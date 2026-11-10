@@ -115,3 +115,25 @@ def test_gemini_gateway(monkeypatch):
     r = client.post("/api/addavto/gemini/generate", headers=A, json={"model": "gemini-3.8-flash", "body": {"contents": []}})
     assert r.status_code == 429 and r.json()["error"]["message"] == "quota"  # статус Google как есть
     assert seen == {"model": "gemini-3.8-flash", "body": {"contents": []}}
+
+
+def test_open_pool_browser(monkeypatch):
+    _setup(monkeypatch)
+    calls = []
+    monkeypatch.setattr(m, "_pool_login_cookies", lambda login: [{"name": "Session_id", "value": "x", "domain": ".yandex.ru"}])
+
+    def fake_run(script, args, stdin_payload, timeout, detail):
+        calls.append((script, stdin_payload))
+        return {"ok": True, "logged_in": True, "url": "https://direct.yandex.ru/dna/grid/campaigns"}, None, ""
+
+    monkeypatch.setattr(m, "_run_addavto_selenium_script", fake_run)
+    assert client.post("/api/addavto/open-pool-browser", json={"login": "pool1"}).status_code == 401
+    assert client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "a b;rm"}).status_code == 422
+    r = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "pool.login-1"})
+    assert r.status_code == 200 and r.json()["logged_in"] is True
+    script, stdin = calls[0]
+    assert script == "open_pool_browser.py" and stdin["login"] == "pool.login-1"
+    assert stdin["cookies"][0]["name"] == "Session_id"  # секреты только через stdin
+    assert stdin["url"] == "https://metrika.yandex.ru/list"
+    bad = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "pool1", "target": "https://evil"})
+    assert bad.status_code == 422
