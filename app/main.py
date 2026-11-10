@@ -2839,6 +2839,63 @@ def addavto_get_yandex_pool_account(login: str, authorization: str | None = Head
         conn.close()
 
 
+def _run_addavto_selenium_script(
+    script: str,
+    args: list[str],
+    stdin_payload: dict[str, Any],
+    timeout: int,
+    timeout_detail: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str]:
+    """Запускает Selenium-скрипт ParsYa (нужен реальный Chrome/дисплей,
+    поэтому только здесь, в WSL) и разбирает его RESULT_JSON:/ERROR_JSON:.
+
+    Секреты (логин/пароль/cookies кабинета Click.ru) идут через stdin, не
+    аргументами — иначе их видно в `ps`. Возвращает (result, error, tail):
+    ровно одно из result/error не None, иначе — 502 с хвостом вывода.
+    """
+    import subprocess
+
+    parsya_root = Path(__file__).resolve().parent.parent.parent
+    command = [str(parsya_root / ".venv" / "bin" / "python3"), str(parsya_root / script), *args]
+
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":0")
+    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+
+    # subprocess.run's own timeout kills via SIGKILL directly, which the
+    # child can't catch at all — its own cleanup (releasing the pool-login
+    # claim) never runs, leaving the login stuck "claimed" forever (seen
+    # live on the first real timeout). Send SIGTERM first and give the
+    # child's own handler (provision_next_direct_account.py) a few seconds
+    # to release the claim before escalating to SIGKILL.
+    proc = subprocess.Popen(
+        command, cwd=str(parsya_root), env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(input=json.dumps(stdin_payload), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        raise HTTPException(status_code=504, detail=timeout_detail)
+
+    for line in stdout.splitlines():
+        if line.startswith("RESULT_JSON:"):
+            return json.loads(line[len("RESULT_JSON:"):]), None, ""
+        if line.startswith("ERROR_JSON:"):
+            return None, json.loads(line[len("ERROR_JSON:"):]), ""
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"Скрипт {script} завершился без распознаваемого результата (exit={proc.returncode}): "
+        f"{stdout[-2000:]}\n{stderr[-2000:]}",
+    )
+
+
 @app.post("/api/addavto/provision-direct-account")
 def addavto_provision_direct_account(
     payload: dict[str, Any] | None = None,
@@ -2853,66 +2910,62 @@ def addavto_provision_direct_account(
     campaigns on, in series (not in parallel: one Chrome session at a time
     to avoid resource contention/captcha-triggering concurrency).
 
+    `payload.clickru` (с 2026-11-10): кабинет Click.ru выбранного в визарде
+    подключения {connection_id, username, password, cookies} — уходит в
+    скрипт через stdin. Без него скрипт работает по-старому (.env ParsYa).
+    В ответе может быть `clickru_cookies` — обновлённая сессия кабинета.
+
     Synchronous and slow (tens of seconds to ~2 minutes per call, same as
     running the script by hand) — callers should budget accordingly.
     """
     addavto_auth(authorization)
-    import subprocess
-
-    name_prefix = (payload or {}).get("account_name_prefix")
-    parsya_root = Path(__file__).resolve().parent.parent.parent
-    command = [
-        str(parsya_root / ".venv" / "bin" / "python3"),
-        str(parsya_root / "provision_next_direct_account.py"),
-    ]
+    payload = payload or {}
+    args: list[str] = []
+    name_prefix = payload.get("account_name_prefix")
     if name_prefix:
-        command.append(str(name_prefix)[:20])
+        args.append(str(name_prefix)[:20])
+    stdin_payload: dict[str, Any] = {}
+    if isinstance(payload.get("clickru"), dict):
+        stdin_payload["clickru"] = payload["clickru"]
 
-    env = dict(os.environ)
-    env.setdefault("DISPLAY", ":0")
-    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
-
-    # subprocess.run's own timeout kills via SIGKILL directly, which the
-    # child can't catch at all — its own cleanup (releasing the pool-login
-    # claim) never runs, leaving the login stuck "claimed" forever (seen
-    # live on the first real timeout). Send SIGTERM first and give the
-    # child's own handler (provision_next_direct_account.py) a few seconds
-    # to release the claim before escalating to SIGKILL.
-    proc = subprocess.Popen(
-        command, cwd=str(parsya_root), env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    result, error, _ = _run_addavto_selenium_script(
+        "provision_next_direct_account.py", args, stdin_payload, 280,
+        "Провижининг аккаунта не успел завершиться за 280с",
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=280)
-        returncode = proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            stdout, stderr = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr = proc.communicate()
-        raise HTTPException(status_code=504, detail="Провижининг аккаунта не успел завершиться за 280с")
+    if error is not None:
+        raise HTTPException(status_code=409, detail=error.get("error", "Ошибка провижининга"))
+    return result
 
-    class _Result:
-        pass
-    result = _Result()
-    result.stdout = stdout
-    result.stderr = stderr
-    result.returncode = returncode
 
-    for line in result.stdout.splitlines():
-        if line.startswith("RESULT_JSON:"):
-            return json.loads(line[len("RESULT_JSON:"):])
-        if line.startswith("ERROR_JSON:"):
-            detail = json.loads(line[len("ERROR_JSON:"):])
-            raise HTTPException(status_code=409, detail=detail.get("error", "Ошибка провижининга"))
+@app.post("/api/addavto/clickru-web-login")
+def addavto_clickru_web_login(
+    payload: dict[str, Any] | None = None,
+    authorization: str | None = Header(default=None),
+):
+    """Вход в веб-кабинет click.ru для подключения Click.ru из addAvto
+    (2026-11-10, clickru_web_session.py): сохранённые cookies, иначе вход
+    по паролю. Тот же Chrome и IP, что и у провижининга.
+    Ответ: {ok, relogged, cookies}. 409 — вход не удался (неверный
+    логин/пароль, капча): addAvto помечает подключение. 502 — сбой
+    браузера/скрипта, про саму учётку ничего не известно.
+    """
+    addavto_auth(authorization)
+    payload = payload or {}
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username or not password:
+        raise HTTPException(status_code=422, detail="Нужны логин и пароль кабинета Click.ru")
+    cookies = payload.get("cookies") if isinstance(payload.get("cookies"), list) else []
 
-    raise HTTPException(
-        status_code=502,
-        detail=f"Скрипт провижининга завершился без распознаваемого результата (exit={result.returncode}): "
-        f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}",
+    result, error, _ = _run_addavto_selenium_script(
+        "clickru_web_session.py", [],
+        {"username": username, "password": password, "cookies": cookies}, 150,
+        "Вход в кабинет Click.ru не успел завершиться за 150с",
     )
+    if error is not None:
+        status_code = 409 if error.get("login_failed") else 502
+        raise HTTPException(status_code=status_code, detail=error.get("error", "Ошибка входа в Click.ru"))
+    return result
 
 
 @app.post("/api/v1/auth/login")
