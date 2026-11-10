@@ -3096,7 +3096,9 @@ def addavto_ozon_fetch(payload: dict[str, Any] | None = None, authorization: str
         result, error, _ = _run_addavto_selenium_script(
             "ozon_fetch.py", [],
             {"path": path, "extra_paths": [str(p) for p in (payload.get("extra_paths") or [])][:3],
-             "session_id": sid, "captcha_timeout": 480},
+             "session_id": sid, "captcha_timeout": 480,
+             # фото товара скачиваются в том же Chrome (CDN Ozon режет сервер)
+             "max_images": max(0, min(int(payload.get("max_images") or 0), 12))},
             600, "Chrome не открыл карточку Ozon за 10 минут",
         )
     finally:

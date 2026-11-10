@@ -44,9 +44,10 @@ def test_fetch_runs_script_with_session(monkeypatch):
         return {"pages": [{"widgetStates": {}}, None], "captcha_solved": False}, None, ""
 
     monkeypatch.setattr(m, "_run_addavto_selenium_script", fake_run)
-    r = client.post("/api/addavto/ozon-fetch", headers=A, json={"path": "/product/x-1/", "extra_paths": ["/product/x-1/?p=2"], "session_id": SID, "label": "проект #7"})
+    r = client.post("/api/addavto/ozon-fetch", headers=A, json={"path": "/product/x-1/", "extra_paths": ["/product/x-1/?p=2"], "session_id": SID, "label": "проект #7", "max_images": 50})
     assert r.status_code == 200, r.text
     assert calls[0][0] == "ozon_fetch.py" and calls[0][1]["session_id"] == SID and calls[0][1]["path"] == "/product/x-1/"
+    assert calls[0][1]["max_images"] == 12  # потолок
     assert m._OZON_CAPTCHA[SID]["active"] is False  # после завершения сессия закрыта
     assert not m._OZON_FETCH_LOCK.locked()
 
