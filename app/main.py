@@ -2968,6 +2968,163 @@ def addavto_clickru_web_login(
     return result
 
 
+# ---------------------------------------------------------------------------
+# addAvto «Директ Озон»: карточка Ozon через настоящий Chrome здесь, в WSL
+# (2026-11-10). С IP прод-сервера Ozon отдаёт 403 любому браузеру; Chrome,
+# запущенный процессом с --remote-debugging-port, с графикой WSLg и домашним
+# IP открывает карточку без капчи (ozon_fetch.py). Если капча всё же
+# появилась — ручное прохождение, как у парсера: скрипт шлёт скриншоты в
+# _OZON_CAPTCHA, человек видит их в окне запуска визарда ЛК или по ссылке из
+# Telegram (/app/ozon-captcha.html) и отправляет клики/перетаскивания.
+# Автоматического решения капчи нет. Состояние — в памяти процесса (uvicorn
+# здесь один), отдельно от browser_sessions парсера (те привязаны к jobs).
+# ---------------------------------------------------------------------------
+_OZON_SID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_OZON_CAPTCHA: dict[str, dict[str, Any]] = {}
+_OZON_CAPTCHA_LOCK = threading.Lock()
+# Один Chrome за раз: постоянный профиль (cookies Ozon) нельзя открыть дважды.
+_OZON_FETCH_LOCK = threading.Lock()
+OZON_CAPTCHA_PAGE_URL = os.getenv(
+    "PARSYA_OZON_CAPTCHA_PAGE_URL",
+    "https://xn--80ak2afbe.xn--b1ajdba5acbodeeeaj1qb.xn--p1ai/app/ozon-captcha.html",
+)
+
+
+class OzonCaptchaStateIn(BaseModel):
+    active: bool = True
+    captcha_required: bool = False
+    url: str = Field(default="", max_length=8000)
+    title: str = Field(default="", max_length=2000)
+    screenshot_b64: str = Field(default="", max_length=4_000_000)
+    viewport_width: int = 0
+    viewport_height: int = 0
+
+
+class OzonCaptchaCommandIn(BaseModel):
+    action: str = Field(pattern="^(click|drag|key|text|refresh)$")
+    x_ratio: float | None = Field(default=None, ge=0, le=1)
+    y_ratio: float | None = Field(default=None, ge=0, le=1)
+    to_x_ratio: float | None = Field(default=None, ge=0, le=1)
+    to_y_ratio: float | None = Field(default=None, ge=0, le=1)
+    key: str = Field(default="", max_length=20)
+    text: str = Field(default="", max_length=500)
+
+
+def _ozon_sid(session_id: str) -> str:
+    if not _OZON_SID_RE.match(session_id or ""):
+        raise HTTPException(status_code=400, detail="Некорректный id сессии")
+    return session_id
+
+
+def _ozon_captcha_gc() -> None:
+    cutoff = time.time() - 3600
+    for sid in [s for s, v in _OZON_CAPTCHA.items() if v.get("touched", 0) < cutoff]:
+        _OZON_CAPTCHA.pop(sid, None)
+
+
+@app.post("/api/addavto/ozon-fetch")
+def addavto_ozon_fetch(payload: dict[str, Any] | None = None, authorization: str | None = Header(default=None)):
+    """Данные карточки Ozon (страницы в формате {widgetStates, seo}) через
+    Chrome в WSL. Тело: {path, extra_paths, session_id, label}. Долго: до
+    ~1 мин без капчи, до ~8 мин, если капчу проходят вручную.
+    409 — капчу не прошли вовремя; 503 — Chrome занят другим запуском."""
+    addavto_auth(authorization)
+    payload = payload or {}
+    path = str(payload.get("path") or "")
+    if not path.startswith("/product/"):
+        raise HTTPException(status_code=422, detail="Нужен путь карточки Ozon вида /product/...")
+    sid = _ozon_sid(str(payload.get("session_id") or ""))
+    label = str(payload.get("label") or "")[:200]
+    if not _OZON_FETCH_LOCK.acquire(timeout=240):
+        raise HTTPException(status_code=503, detail="Chrome для Ozon занят другим запуском — повторите через минуту")
+    try:
+        with _OZON_CAPTCHA_LOCK:
+            _ozon_captcha_gc()
+            _OZON_CAPTCHA[sid] = {"active": True, "captcha_required": False, "label": label, "touched": time.time(),
+                                  "notified": False, "command": None}
+        result, error, _ = _run_addavto_selenium_script(
+            "ozon_fetch.py", [],
+            {"path": path, "extra_paths": [str(p) for p in (payload.get("extra_paths") or [])][:3],
+             "session_id": sid, "captcha_timeout": 480},
+            600, "Chrome не открыл карточку Ozon за 10 минут",
+        )
+    finally:
+        _OZON_FETCH_LOCK.release()
+        with _OZON_CAPTCHA_LOCK:
+            if sid in _OZON_CAPTCHA:
+                _OZON_CAPTCHA[sid].update(active=False, captcha_required=False, command=None, touched=time.time())
+    if error is not None:
+        status_code = 409 if error.get("captcha_timeout") else 502
+        raise HTTPException(status_code=status_code, detail=error.get("error", "Ошибка Chrome/Ozon"))
+    return result
+
+
+@app.post("/api/addavto/ozon-captcha/{session_id}/state")
+def addavto_ozon_captcha_state(session_id: str, payload: OzonCaptchaStateIn, authorization: str | None = Header(default=None)):
+    """ozon_fetch.py шлёт сюда скриншот ~раз в секунду, пока ждёт капчу."""
+    addavto_auth(authorization)
+    sid = _ozon_sid(session_id)
+    notify = False
+    with _OZON_CAPTCHA_LOCK:
+        s = _OZON_CAPTCHA.setdefault(sid, {"label": "", "notified": False, "command": None})
+        s.update(payload.model_dump(), touched=time.time(), updated_at=now_iso())
+        if payload.captcha_required and not s.get("notified"):
+            s["notified"] = notify = True
+        if not payload.active:
+            s["command"] = None
+        label = s.get("label") or ""
+    if notify:
+        text = (f"Ozon показал капчу при генерации объявлений{(' — ' + label) if label else ''}.\n"
+                f"Пройти вручную: {OZON_CAPTCHA_PAGE_URL}?s={sid}\n"
+                "(или в окне запуска визарда; окно Chrome открыто и на ПК в WSL)")
+        threading.Thread(target=notify_telegram_alert, args=(text,), daemon=True).start()
+    return {"ok": True}
+
+
+@app.get("/api/addavto/ozon-captcha/{session_id}/command")
+def addavto_ozon_captcha_command(session_id: str, authorization: str | None = Header(default=None)):
+    addavto_auth(authorization)
+    sid = _ozon_sid(session_id)
+    with _OZON_CAPTCHA_LOCK:
+        s = _OZON_CAPTCHA.get(sid) or {}
+        command, s["command"] = s.get("command"), None
+    return {"command": command}
+
+
+@app.get("/api/v1/ozon-captcha/{session_id}")
+def api_ozon_captcha_state(session_id: str, principal: dict = Depends(public_api_principal)):
+    """Окно капчи Ozon в ЛК: состояние и последний скриншот."""
+    require_user_principal(principal)
+    sid = _ozon_sid(session_id)
+    with _OZON_CAPTCHA_LOCK:
+        s = dict(_OZON_CAPTCHA.get(sid) or {})
+    if not s:
+        return {"active": False, "captcha_required": False, "known": False}
+    return {
+        "known": True, "active": bool(s.get("active")), "captcha_required": bool(s.get("captcha_required")),
+        "label": s.get("label") or "", "url": s.get("url") or "", "title": s.get("title") or "",
+        "screenshot_b64": (s.get("screenshot_b64") or "") if s.get("captcha_required") else "",
+        "viewport_width": s.get("viewport_width") or 0, "viewport_height": s.get("viewport_height") or 0,
+        "updated_at": s.get("updated_at") or "",
+    }
+
+
+@app.post("/api/v1/ozon-captcha/{session_id}/command")
+def api_ozon_captcha_command(session_id: str, payload: OzonCaptchaCommandIn, principal: dict = Depends(public_api_principal)):
+    require_user_principal(principal)
+    sid = _ozon_sid(session_id)
+    if payload.action in ("click", "drag") and (payload.x_ratio is None or payload.y_ratio is None):
+        raise HTTPException(status_code=422, detail="Нужны координаты x_ratio/y_ratio")
+    if payload.action == "drag" and (payload.to_x_ratio is None or payload.to_y_ratio is None):
+        raise HTTPException(status_code=422, detail="Для перетаскивания нужны to_x_ratio/to_y_ratio")
+    with _OZON_CAPTCHA_LOCK:
+        s = _OZON_CAPTCHA.get(sid)
+        if not s or not s.get("active"):
+            raise HTTPException(status_code=404, detail="Сессия капчи Ozon не активна")
+        s["command"] = payload.model_dump(exclude_none=True)
+    return {"ok": True}
+
+
 @app.post("/api/v1/auth/login")
 def api_login(payload: LoginIn):
     email = payload.email.strip().casefold()
