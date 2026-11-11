@@ -2937,7 +2937,11 @@ def addavto_provision_direct_account(
     return result
 
 
-_POOL_LOGIN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+# Логины пула — почты (denis2457@argumenty-i-fakty.ru), поэтому «@» и «+»
+# допустимы (2026-11-11: «Некорректный логин» на «Открыть Директ»).
+_POOL_LOGIN_RE = re.compile(r"^[A-Za-z0-9._%+@-]{1,128}$")
+# Логин организации Директа из Click.ru — porg-xxxx (без «@»).
+_ORG_LOGIN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def _pool_login_cookies(login: str) -> list[dict[str, Any]]:
@@ -2986,7 +2990,7 @@ def addavto_open_pool_browser(payload: dict[str, Any] | None = None, authorizati
     # «Участник»: скрипт выберет её в Яндекс ID и откроет Директ с ulogin.
     org_login = str(payload.get("org_login") or "")
     if org_login:
-        if not _POOL_LOGIN_RE.match(org_login):
+        if not _ORG_LOGIN_RE.match(org_login):
             raise HTTPException(status_code=422, detail="Некорректный логин организации")
         url = f"https://direct.yandex.ru/dna/grid/campaigns?ulogin={org_login}"
     cookies = _pool_login_cookies(login)

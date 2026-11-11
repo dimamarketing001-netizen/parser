@@ -145,7 +145,7 @@ def test_open_pool_browser_direct_org(monkeypatch):
     monkeypatch.setattr(m, "_pool_login_cookies", lambda login: [{"name": "Session_id", "value": "x", "domain": ".yandex.ru"}])
     monkeypatch.setattr(m, "_run_addavto_selenium_script",
                         lambda script, args, stdin, timeout, detail: (calls.append(stdin) or ({"ok": True, "logged_in": True, "url": "u"}, None, "")))
-    r = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "pool1", "target": "direct", "org_login": "porg-abc123"})
+    r = client.post("/api/addavto/open-pool-browser", headers=A, json={"login": "denis2457@argumenty-i-fakty.ru", "target": "direct", "org_login": "porg-abc123"})
     assert r.status_code == 200 and r.json()["logged_in"] is True
     assert calls[0]["org_login"] == "porg-abc123"
     assert calls[0]["url"] == "https://direct.yandex.ru/dna/grid/campaigns?ulogin=porg-abc123"
