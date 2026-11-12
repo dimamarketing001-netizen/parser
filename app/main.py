@@ -2795,6 +2795,13 @@ def _yandex_pool_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "has_metrika_token": row.get("metrika_access_token") is not None,
         "metrika_token_expires_at": row["metrika_token_expires_at"].isoformat() if row.get("metrika_token_expires_at") else None,
         "metrika_connected_at": row["metrika_connected_at"].isoformat() if row.get("metrika_connected_at") else None,
+        # Для дашборда пула в ЛК (2026-11-12). Без паролей/cookies/токенов.
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "last_error": (str(row.get("last_error") or "")[:300] or None),
+        "has_cookies": bool(row.get("has_cookies")),
+        "direct_account_id": row.get("direct_account_id"),
+        "direct_connected_at": row["direct_connected_at"].isoformat() if row.get("direct_connected_at") else None,
     }
 
 
@@ -2807,7 +2814,9 @@ def addavto_list_yandex_pool_accounts(authorization: str | None = Header(default
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             "SELECT login, status, is_free, metrika_access_token, metrika_token_expires_at, "
-            "metrika_connected_at FROM yandex_accounts ORDER BY login"
+            "metrika_connected_at, created_at, updated_at, last_error, direct_account_id, direct_connected_at, "
+            "(cookies_json IS NOT NULL AND cookies_json <> \"\") AS has_cookies "
+            "FROM yandex_accounts ORDER BY login"
         )
         return {"items": [_yandex_pool_row_to_dict(row) for row in cursor.fetchall()]}
     finally:
