@@ -3668,6 +3668,22 @@ def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0, princip
     }
 
 
+def _attach_collections(db: sqlite3.Connection, items: list[dict[str, Any]], principal: dict) -> None:
+    """`collections`: подборки текущего пользователя, в которых лежит креатив (ключ группы — content_fingerprint или hash:<creative_hash>)."""
+    try:
+        user_id = require_user_principal(principal)
+    except Exception:
+        return
+    mp: dict[str, list[dict[str, Any]]] = {}
+    for r in db.execute(
+        "SELECT i.group_key, c.id, c.name FROM collection_items i JOIN collections c ON c.id=i.collection_id "
+        "WHERE c.owner_user_id=? ORDER BY c.name", (user_id,)).fetchall():
+        mp.setdefault(r["group_key"], []).append({"id": r["id"], "name": r["name"]})
+    for it in items:
+        found = list(mp.get(it.get("content_fingerprint") or "", [])) if it.get("content_fingerprint") else list(mp.get("hash:" + str(it.get("creative_hash")), []))
+        it["collections"] = found
+
+
 def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
     """Attaches `intents`: the distinct search queries (jobs.key_text) each creative was
     captured under, so the UI can show "this ad belongs to «X»" on every card/detail
@@ -3819,6 +3835,7 @@ def api_list_creatives(
         ).fetchall()
         items = [_creative_row_to_dict(r) for r in rows]
         _attach_intents(db, items)
+        _attach_collections(db, items, principal)
         if job_rel is not None:
             for it in items:
                 it["job_match"] = job_rel.get(it["id"])  # True — по теме, False — не по теме, None — ещё определяется
