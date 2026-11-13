@@ -4413,7 +4413,11 @@ async def api_ads_proxy(path: str, request: Request, principal: dict = Depends(p
     body = await request.body()
     try:
         # retries=4: repeat CONNECT errors only (WSL DNS blips -> 502, 2026-11-13)
-        async with httpx.AsyncClient(auth=(ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD), timeout=30.0,
+        async with httpx.AsyncClient(auth=(ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD),
+                                     # read 115s: adding a Click.ru connection logs into the cabinet
+                                     # via Chrome (~40s); 30s gave 502 + duplicate connection (2026-11-13).
+                                     # Front nginx waits 120s.
+                                     timeout=httpx.Timeout(115.0, connect=10.0),
                                      transport=httpx.AsyncHTTPTransport(retries=4)) as client:
             upstream = await client.request(
                 request.method,
