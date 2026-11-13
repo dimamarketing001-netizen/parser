@@ -922,7 +922,7 @@ class Worker:
 
 def main() -> None:
     load_env_file()
-    slots = max(1, int(os.getenv("PARSYA_WORKER_SLOTS", "10")))
+    slots = max(1, int(os.getenv("PARSYA_WORKER_SLOTS", "20")))
     print(f"[worker] Параллельных слотов: {slots}", flush=True)
     threads = []
     for n in range(slots):
