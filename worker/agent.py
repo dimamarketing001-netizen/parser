@@ -800,13 +800,13 @@ class Worker:
             import yandex_accounts_db as yadb
             conn = yadb.connect()
             try:
-                acc = yadb.acquire_account_for_intent(conn, key_text)
+                acc = yadb.acquire_account_for_intent(conn, key_text, city)
             finally:
                 conn.close()
             if acc:
                 env["PARSYA_YANDEX_LOGIN"] = acc["login"]
-                how = "тот же аккаунт интента" if acc["reused"] else (
-                    "прежний аккаунт интента непригоден — выдан новый" if acc["replaced"] else "новый свежий аккаунт для нового интента")
+                how = "тот же аккаунт для интента и города" if acc["reused"] else (
+                    "прежний аккаунт интента непригоден — выдан новый" if acc["replaced"] else "новый свежий аккаунт: новый интент или новый город")
                 self.post_log(job_id, f"[worker] Аккаунт Яндекса: {acc['login']} ({how})\n")
             else:
                 self.post_log(job_id, "[worker] В пуле нет свободных свежих аккаунтов — использую 2profile.pkl\n")
