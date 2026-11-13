@@ -2799,6 +2799,8 @@ def _sync_worker_state(db, worker_id: str, last_error: str | None = None) -> Non
                ("running" if running else "idle", running, now_iso(), last_error, worker_id))
 
 
+MAX_ACTIVE_SCHEDULES = int(os.getenv("PARSYA_MAX_ACTIVE_SCHEDULES", "50"))
+MAX_MANUAL_RUNS = int(os.getenv("PARSYA_MAX_MANUAL_RUNS", "20"))
 JOB_MAX_ATTEMPTS = int(os.getenv("PARSYA_JOB_MAX_ATTEMPTS", "10"))
 JOB_RETRY_DELAYS_MIN = [2, 5, 10, 15, 20, 30]  # дальше — каждые 30 минут
 
@@ -4039,8 +4041,8 @@ def api_create_run(payload: RunCreateIn, principal: dict = Depends(public_api_pr
         active = db.execute(
             "SELECT COUNT(*) FROM jobs WHERE owner_user_id=? AND schedule_id IS NULL AND status IN ('queued','running')", (user_id,)
         ).fetchone()[0]
-        if active >= 3:
-            raise HTTPException(status_code=429, detail="У вас уже 3 запуска в очереди/выполняются — подождите их завершения")
+        if active >= MAX_MANUAL_RUNS:
+            raise HTTPException(status_code=429, detail=f"У вас уже {MAX_MANUAL_RUNS} запусков в очереди/выполняются — подождите их завершения")
         cur = db.execute(
             "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id) VALUES('queued',?,?,?,?)",
             (city, key_text, now_iso(), user_id),
@@ -4076,8 +4078,8 @@ def api_create_schedule(payload: ScheduleCreateIn, principal: dict = Depends(pub
         active = db.execute(
             "SELECT COUNT(*) FROM scan_schedules WHERE owner_user_id=? AND status IN ('active','paused')", (user_id,)
         ).fetchone()[0]
-        if active >= 10:
-            raise HTTPException(status_code=429, detail="Уже 10 активных расписаний — остановите ненужные")
+        if active >= MAX_ACTIVE_SCHEDULES:
+            raise HTTPException(status_code=429, detail=f"Уже {MAX_ACTIVE_SCHEDULES} активных расписаний — остановите ненужные")
         cur = db.execute(
             "INSERT INTO scan_schedules(owner_user_id,city,key_text,runs_per_day,duration_days,created_at,end_at,next_run_at) "
             "VALUES(?,?,?,?,?,?,?,?)",
