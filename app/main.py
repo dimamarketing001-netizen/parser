@@ -2351,7 +2351,7 @@ def worker_poll(payload: PollIn, authorization: str | None = Header(default=None
         job = db.execute("SELECT * FROM jobs WHERE status='queued' AND (retry_at IS NULL OR retry_at<=?) ORDER BY id LIMIT 1",
                          (now_iso(),)).fetchone()
         if not job:
-            db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=? WHERE worker_id=?", (now_iso(), payload.worker_id))
+            _sync_worker_state(db, payload.worker_id)
             db.commit()
             return {"job": None, "poll_after_seconds": 5}
         db.execute("UPDATE jobs SET status='running',started_at=?,worker_id=? WHERE id=? AND status='queued'", (now_iso(), payload.worker_id, job["id"]))
@@ -2791,6 +2791,14 @@ def worker_site_results(job_id: int, payload: SiteResultsBatch, authorization: s
     return {"ok": True, "sites_received": len(payload.sites)}
 
 
+def _sync_worker_state(db, worker_id: str, last_error: str | None = None) -> None:
+    """Воркер ведёт несколько запусков параллельно: он 'running', пока идёт хотя бы один."""
+    cur = db.execute("SELECT MAX(id) m FROM jobs WHERE worker_id=? AND status='running'", (worker_id,)).fetchone()
+    running = cur["m"] if cur else None
+    db.execute("UPDATE workers SET state=?,current_job_id=?,last_seen=?,last_error=COALESCE(?,last_error) WHERE worker_id=?",
+               ("running" if running else "idle", running, now_iso(), last_error, worker_id))
+
+
 JOB_MAX_ATTEMPTS = int(os.getenv("PARSYA_JOB_MAX_ATTEMPTS", "10"))
 JOB_RETRY_DELAYS_MIN = [2, 5, 10, 15, 20, 30]  # дальше — каждые 30 минут
 
@@ -2814,8 +2822,7 @@ def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = He
                     "exit_code=?,error_text=?,log_text=COALESCE(log_text,'')||? WHERE id=?",
                     (done, retry_at, payload.exit_code, f"Попытка {done} из {JOB_MAX_ATTEMPTS}: {payload.error or 'ошибка'}", note, job_id))
                 if job["worker_id"]:
-                    db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=?,last_error=? WHERE worker_id=?",
-                               (now_iso(), payload.error or None, job["worker_id"]))
+                    _sync_worker_state(db, job["worker_id"], payload.error or None)
                 db.commit()
                 return {"ok": True, "retry_at": retry_at, "attempt": done}
         db.execute(
@@ -2824,8 +2831,7 @@ def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = He
              json.dumps(payload.result, ensure_ascii=False), job_id, job_id),
         )
         if job["worker_id"]:
-            db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=?,last_error=? WHERE worker_id=?",
-                       (now_iso(), payload.error or None, job["worker_id"]))
+            _sync_worker_state(db, job["worker_id"], payload.error or None)
         label = job["key_text"] or f"№{job_id}"
         if payload.status == "succeeded":
             total = db.execute("SELECT total_creatives FROM jobs WHERE id=?", (job_id,)).fetchone()["total_creatives"]

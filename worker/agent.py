@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
@@ -73,8 +74,23 @@ def required(name: str) -> str:
     return value
 
 
+def mem_available_mb() -> int:
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 10**9
+
+
 class Worker:
-    def __init__(self) -> None:
+    def __init__(self, slot: int = 0) -> None:
+        self.slot = slot
+        # у каждого слота свой порт отладки Chrome: 9222, 9223, ...
+        self.chrome_port = int(os.getenv("PARSYA_CHROME_BASE_PORT", "9222")) + slot
+        self.min_free_mb = int(os.getenv("PARSYA_MIN_FREE_MB", "1500"))
         self.base = required("PARSYA_CONTROL_URL").rstrip("/")
         self.token = required("PARSYA_WORKER_TOKEN")
         self.worker_id = os.getenv("PARSYA_WORKER_ID", socket.gethostname())[:120]
@@ -780,7 +796,7 @@ class Worker:
         job_id = int(job["id"])
         city = str(job.get("city") or "").strip()
         key_text = str(job.get("key_text") or "").strip()
-        self.post_log(job_id, f"[worker] Запускаю job #{job_id}; worker={self.worker_id}; city={city}; query={key_text}\n")
+        self.post_log(job_id, f"[worker] Запускаю job #{job_id}; worker={self.worker_id}; слот={self.slot + 1}; порт Chrome={self.chrome_port}; city={city}; query={key_text}\n")
         if not self.script.is_file():
             error = f"Parser script not found: {self.script}"
             self.request("POST", f"/api/worker/jobs/{job_id}/finish", json={"status": "failed", "exit_code": 2, "error": error, "result": {}})
@@ -791,6 +807,7 @@ class Worker:
         env["PARSYA_KEY_TEXT"] = key_text
         env["PARSYA_SOURCE_MODE"] = "remote-worker"
         env["PARSYA_JOB_ID"] = str(job_id)
+        env["PARSYA_CHROME_PORT"] = str(self.chrome_port)
         env["PYTHONUNBUFFERED"] = "1"
         # Интент -> аккаунт Яндекса: новый интент берёт свежий нетронутый аккаунт
         # пула, повторный запуск того же интента — тот же аккаунт.
@@ -877,9 +894,13 @@ class Worker:
                 pass
 
     def run_forever(self) -> None:
-        print(f"[worker] Started worker={self.worker_id}; control={self.base}; parser={self.script}", flush=True)
+        print(f"[worker] Started worker={self.worker_id} slot={self.slot + 1}; control={self.base}; parser={self.script}", flush=True)
         while True:
             try:
+                # Не берём новое задание, если свободной памяти мало: каждый Chrome ест 1–2 ГБ
+                if mem_available_mb() < self.min_free_mb:
+                    time.sleep(15)
+                    continue
                 payload = {
                     "worker_id": self.worker_id,
                     "hostname": socket.gethostname(),
@@ -901,7 +922,20 @@ class Worker:
 
 def main() -> None:
     load_env_file()
-    Worker().run_forever()
+    slots = max(1, int(os.getenv("PARSYA_WORKER_SLOTS", "10")))
+    print(f"[worker] Параллельных слотов: {slots}", flush=True)
+    threads = []
+    for n in range(slots):
+        w = Worker(n)
+        t = threading.Thread(target=w.run_forever, name=f"slot-{n + 1}", daemon=True)
+        t.start()
+        threads.append(t)
+        time.sleep(1.5)  # разводим первые опросы, чтобы слоты не брали задания в один миг
+    try:
+        while any(t.is_alive() for t in threads):
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("[worker] Stopped by operator.", flush=True)
 
 
 if __name__ == "__main__":
