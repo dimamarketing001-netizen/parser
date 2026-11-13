@@ -4044,6 +4044,74 @@ def api_schedule_action(schedule_id: int, payload: ScheduleActionIn, principal: 
 
 _job_rel_cache: dict[tuple, dict[str, Any]] = {}
 
+# --- Оценка времени запуска (2026-11-13) --------------------------------------------
+# Раньше ETA брался как медиана ВСЕХ успешных запусков, среди которых много оборванных
+# (мёртвая сессия, ошибка Дзена, режим одной площадки) — выходило ~33 мин при реальных
+# ~2 часах. Теперь берём среднее по последним ПОЛНЫМ запускам: обработаны все площадки
+# (N из N, N ≥ 90), нет «invalid session id» и нет критической ошибки Дзена.
+_eta_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_FULL_RUN_SITES_RE = re.compile(r"Обработано площадок: (\d+) из (\d+)")
+ETA_LAST_FULL_RUNS = 5
+
+
+def _full_run_stats(db: sqlite3.Connection) -> dict[str, Any]:
+    now = time.monotonic()
+    if _eta_cache["data"] is not None and now - _eta_cache["at"] < 600:
+        return _eta_cache["data"]
+    durations: list[tuple[int, float]] = []
+    for row in db.execute(
+        "SELECT id, started_at, finished_at, log_text FROM jobs WHERE status='succeeded' "
+        "AND started_at IS NOT NULL AND finished_at IS NOT NULL AND log_text LIKE '%Обработано площадок%' "
+        "ORDER BY id DESC LIMIT 60"
+    ).fetchall():
+        log = row["log_text"] or ""
+        m = None
+        for m in _FULL_RUN_SITES_RE.finditer(log):
+            pass
+        if not m or int(m.group(1)) != int(m.group(2)) or int(m.group(2)) < 90:
+            continue
+        if "invalid session id" in log or "критическая ошибка на этапе парсинга" in log:
+            continue
+        secs = (datetime.fromisoformat(row["finished_at"]) - datetime.fromisoformat(row["started_at"])).total_seconds()
+        if secs > 0:
+            durations.append((row["id"], secs))
+        if len(durations) >= ETA_LAST_FULL_RUNS:
+            break
+    data = {
+        "avg_full_seconds": round(sum(d for _, d in durations) / len(durations)) if durations else None,
+        "samples": len(durations),
+        "job_ids": [i for i, _ in durations],
+    }
+    _eta_cache.update(at=now, data=data)
+    return data
+
+
+_STAGE_SITE_RE = re.compile(r"ПЛОЩАДКА (\d+)/(\d+):")
+_STAGE_DZEN_RE = re.compile(r"ДЗЕН: основной проход (\d+)/(\d+)")
+
+
+def _job_stage(db: sqlite3.Connection, job_id: int) -> dict[str, Any] | None:
+    row = db.execute("SELECT substr(log_text, -40000) AS tail FROM jobs WHERE id=?", (job_id,)).fetchone()
+    tail = (row["tail"] if row else "") or ""
+    site = None
+    for site in _STAGE_SITE_RE.finditer(tail):
+        pass
+    if site:
+        return {"kind": "sites", "index": int(site.group(1)), "total": int(site.group(2))}
+    dz = None
+    for dz in _STAGE_DZEN_RE.finditer(tail):
+        pass
+    if dz:
+        return {"kind": "dzen_main", "index": int(dz.group(1)), "total": int(dz.group(2))}
+    sc = None
+    for sc in re.finditer(r"Дзен: основной скролл (\d+)/(\d+)", tail):
+        pass
+    if sc:
+        return {"kind": "dzen_main", "index": None, "total": None, "scroll": int(sc.group(1)), "scroll_total": int(sc.group(2))}
+    if "ДЗЕН: ПРЕДВАРИТЕЛЬНЫЙ ПОИСК" in tail:
+        return {"kind": "dzen_search"}
+    return None
+
 
 def _job_relevance(db: sqlite3.Connection, job_id: int, key_text: str) -> dict[str, Any]:
     """Сколько креативов запуска ПОДХОДЯТ под его ключевое слово (2026-11-13).
@@ -4114,7 +4182,10 @@ def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(pu
         for it in items:
             if (it.get("total_creatives") or 0) > 0 or it["status"] in ("running", "succeeded"):
                 it["relevance"] = _relevance_public(_job_relevance(db, it["id"], it["key_text"]))
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+            if it["status"] == "running":
+                it["stage"] = _job_stage(db, it["id"])
+        eta = _full_run_stats(db)
+    return {"items": items, "total": total, "limit": limit, "offset": offset, "eta": eta}
 
 
 @app.get("/api/v1/runs/{job_id}")
