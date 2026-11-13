@@ -4377,7 +4377,9 @@ async def api_ads_proxy(path: str, request: Request, principal: dict = Depends(p
         raise HTTPException(status_code=503, detail="addAvto integration is not configured (PARSYA_ADDAVTO_BASE_URL/ADMIN_USER/ADMIN_PASSWORD)")
     body = await request.body()
     try:
-        async with httpx.AsyncClient(auth=(ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD), timeout=30.0) as client:
+        # retries=4: repeat CONNECT errors only (WSL DNS blips -> 502, 2026-11-13)
+        async with httpx.AsyncClient(auth=(ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD), timeout=30.0,
+                                     transport=httpx.AsyncHTTPTransport(retries=4)) as client:
             upstream = await client.request(
                 request.method,
                 f"{ADDAVTO_BASE_URL}/api/{path}",
