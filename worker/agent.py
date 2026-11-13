@@ -792,6 +792,26 @@ class Worker:
         env["PARSYA_SOURCE_MODE"] = "remote-worker"
         env["PARSYA_JOB_ID"] = str(job_id)
         env["PYTHONUNBUFFERED"] = "1"
+        # Интент -> аккаунт Яндекса: новый интент берёт свежий нетронутый аккаунт
+        # пула, повторный запуск того же интента — тот же аккаунт.
+        env.pop("PARSYA_YANDEX_LOGIN", None)
+        try:
+            sys.path.insert(0, str(self.home))
+            import yandex_accounts_db as yadb
+            conn = yadb.connect()
+            try:
+                acc = yadb.acquire_account_for_intent(conn, key_text)
+            finally:
+                conn.close()
+            if acc:
+                env["PARSYA_YANDEX_LOGIN"] = acc["login"]
+                how = "тот же аккаунт интента" if acc["reused"] else (
+                    "прежний аккаунт интента непригоден — выдан новый" if acc["replaced"] else "новый свежий аккаунт для нового интента")
+                self.post_log(job_id, f"[worker] Аккаунт Яндекса: {acc['login']} ({how})\n")
+            else:
+                self.post_log(job_id, "[worker] В пуле нет свободных свежих аккаунтов — использую 2profile.pkl\n")
+        except Exception as exc:
+            self.post_log(job_id, f"[worker] Не удалось выдать аккаунт из пула ({type(exc).__name__}: {exc}) — использую 2profile.pkl\n")
         command = [self.python, str(self.script)]
         started_at = time.time()
         run_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

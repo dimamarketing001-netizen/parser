@@ -21,6 +21,7 @@ import httpx
 import snowballstemmer
 
 from app import embeddings as emb
+from app import ai_intent as aii
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -994,6 +995,173 @@ def init_db() -> None:
 
 init_db()
 threading.Thread(target=_embedding_drain_loop, daemon=True, name="embedding-drain").start()
+
+
+# --- Расписание повторных сканирований (2026-11-13) ---------------------------
+# «N раз в день в течение 7/14/30 дней». Планировщик (тред ниже) раз в 30 с ставит в
+# очередь обычные jobs для расписаний, у которых наступил next_run_at; воркер забирает
+# их как любые другие. Один и тот же key_text => воркер выдаёт тот же аккаунт Яндекса.
+SCHEDULE_DAYS = (7, 14, 30)
+
+
+def init_schedules() -> None:
+    with closing(connect()) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS scan_schedules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_user_id INTEGER NOT NULL,
+          city TEXT NOT NULL,
+          key_text TEXT NOT NULL,
+          runs_per_day INTEGER NOT NULL,
+          duration_days INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          end_at TEXT NOT NULL,
+          next_run_at TEXT,
+          runs_created INTEGER NOT NULL DEFAULT 0,
+          runs_skipped INTEGER NOT NULL DEFAULT 0,
+          finished_at TEXT
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_sched_status_next ON scan_schedules(status, next_run_at)")
+        job_cols = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "schedule_id" not in job_cols:
+            db.execute("ALTER TABLE jobs ADD COLUMN schedule_id INTEGER")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_jobs_schedule ON jobs(schedule_id)")
+        db.commit()
+
+
+init_schedules()
+
+
+def _sched_tick() -> None:
+    now = datetime.now(timezone.utc)
+    with closing(connect()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        due = db.execute(
+            "SELECT * FROM scan_schedules WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=?",
+            (now.replace(microsecond=0).isoformat(),),
+        ).fetchall()
+        for sc in due:
+            interval = timedelta(hours=24 / sc["runs_per_day"])
+            end_at = datetime.fromisoformat(sc["end_at"])
+            busy = db.execute(
+                "SELECT 1 FROM jobs WHERE schedule_id=? AND status IN ('queued','running') LIMIT 1", (sc["id"],)
+            ).fetchone()
+            planned = datetime.fromisoformat(sc["next_run_at"])
+            created, skipped = sc["runs_created"], sc["runs_skipped"]
+            if busy:
+                # Предыдущий запуск ещё идёт — слот пропускаем, не копим очередь.
+                skipped += 1
+            else:
+                db.execute(
+                    "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id,schedule_id) VALUES('queued',?,?,?,?,?)",
+                    (sc["city"], sc["key_text"], now_iso(), sc["owner_user_id"], sc["id"]),
+                )
+                created += 1
+            nxt = planned + interval
+            while nxt <= now:  # после простоя сервиса не догоняем пачкой
+                nxt += interval
+                skipped += 1
+            if nxt >= end_at:
+                db.execute(
+                    "UPDATE scan_schedules SET status='finished',next_run_at=NULL,finished_at=?,runs_created=?,runs_skipped=? WHERE id=?",
+                    (now_iso(), created, skipped, sc["id"]),
+                )
+            else:
+                db.execute(
+                    "UPDATE scan_schedules SET next_run_at=?,runs_created=?,runs_skipped=? WHERE id=?",
+                    (nxt.replace(microsecond=0).isoformat(), created, skipped, sc["id"]),
+                )
+        db.commit()
+
+
+def _scheduler_loop() -> None:
+    while True:
+        try:
+            _sched_tick()
+        except Exception as exc:  # noqa: BLE001 - фоновый цикл не должен падать
+            print(f"[scheduler] error: {exc}", flush=True)
+        time.sleep(30)
+
+
+threading.Thread(target=_scheduler_loop, daemon=True, name="scan-scheduler").start()
+
+
+# --- Интент креатива (Gemini), 2026-11-13 ---------------------------------------
+# creatives.ai_intent — о чём реклама НА САМОМ ДЕЛЕ (определяет Gemini по заголовку и
+# тексту). Не путать с ключевым словом запуска (jobs.key_text) — по какому запросу
+# парсер искал. См. app/ai_intent.py.
+def init_ai_intent() -> None:
+    with closing(connect()) as db:
+        cols = {row["name"] for row in db.execute("PRAGMA table_info(creatives)").fetchall()}
+        for col, typ in (("ai_intent", "TEXT"), ("ai_intent_at", "TEXT"), ("ai_intent_model", "TEXT")):
+            if col not in cols:
+                db.execute(f"ALTER TABLE creatives ADD COLUMN {col} {typ}")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_ai_intent ON creatives(ai_intent)")
+        # Креативы совсем без текста классифицировать нечем — помечаем сразу, без вызова Gemini.
+        db.execute(
+            "UPDATE creatives SET ai_intent=?, ai_intent_at=?, ai_intent_model='no-text' "
+            "WHERE ai_intent IS NULL AND COALESCE(title,'')='' AND COALESCE(description,'')=''",
+            (aii.UNKNOWN, now_iso()),
+        )
+        db.commit()
+
+
+init_ai_intent()
+_ai_intent_fail_counts: dict[int, int] = {}
+
+
+def _process_ai_intent_batch() -> bool:
+    """Один шаг фонового цикла: до BATCH_SIZE неразмеченных креативов (новые первыми) — один
+    запрос к Gemini на пачку. True, если что-то обработали. При сбое пачки пробуем по одному;
+    креатив, который 3 раза подряд не размечается, до перезапуска сервиса пропускаем."""
+    with closing(connect()) as db:
+        skip = [i for i, n in _ai_intent_fail_counts.items() if n >= 3]
+        skip_sql = f" AND id NOT IN ({','.join('?' * len(skip))})" if skip else ""
+        rows = db.execute(
+            "SELECT id,title,description FROM creatives WHERE ai_intent IS NULL"
+            + skip_sql + " ORDER BY id DESC LIMIT ?", skip + [aii.BATCH_SIZE],
+        ).fetchall()
+        if not rows:
+            return False
+        known = [r["ai_intent"] for r in db.execute(
+            "SELECT ai_intent FROM creatives WHERE ai_intent IS NOT NULL AND ai_intent<>? "
+            "GROUP BY ai_intent ORDER BY COUNT(*) DESC LIMIT ?", (aii.UNKNOWN, aii.MAX_KNOWN)).fetchall()]
+        items = [dict(r) for r in rows]
+        result = aii.classify_batch(items, known, on_hard_failure=_gemini_alert)
+        if result is None and len(items) > 1:
+            result = {}
+            for it in items:
+                one = aii.classify_batch([it], known, on_hard_failure=None)
+                if one:
+                    result.update(one)
+        result = result or {}
+        now = now_iso()
+        for it in items:
+            intent = result.get(it["id"])
+            if intent:
+                db.execute("UPDATE creatives SET ai_intent=?, ai_intent_at=?, ai_intent_model=? WHERE id=?",
+                           (intent, now, aii.last_model_used, it["id"]))
+                _ai_intent_fail_counts.pop(it["id"], None)
+            else:
+                _ai_intent_fail_counts[it["id"]] = _ai_intent_fail_counts.get(it["id"], 0) + 1
+        db.commit()
+        return bool(result)
+
+
+def _ai_intent_loop() -> None:
+    time.sleep(20)
+    while True:
+        try:
+            did = _process_ai_intent_batch()
+        except Exception as exc:  # noqa: BLE001 - фоновый цикл не должен падать
+            print(f"[ai-intent] loop error: {exc}", flush=True)
+            did = False
+            time.sleep(60)
+        time.sleep(4 if did else 30)
+
+
+if os.getenv("PARSYA_AI_INTENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
+    threading.Thread(target=_ai_intent_loop, daemon=True, name="ai-intent").start()
 
 
 def esc(value: Any) -> str:
@@ -3429,13 +3597,35 @@ def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None
             by_id.setdefault(row["creative_id"], []).append(row["key_text"])
     for item in items:
         item["intents"] = by_id.get(item.get("id"), [])
+    # Запуски, в которых креатив найден: ключевое слово запуска + ссылка (job_id) на запуск.
+    runs_by_id: dict[int, list[dict[str, Any]]] = {}
+    for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
+        placeholders = ",".join(["?"] * len(chunk))
+        for row in db.execute(
+            f"SELECT o.creative_id, j.id AS job_id, j.key_text, j.city, j.status, MAX(o.observed_at) AS seen_at "
+            f"FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE o.creative_id IN ({placeholders}) "
+            f"GROUP BY o.creative_id, j.id ORDER BY j.id DESC",
+            chunk,
+        ).fetchall():
+            runs_by_id.setdefault(row["creative_id"], []).append({
+                "job_id": row["job_id"], "key_text": row["key_text"], "city": row["city"],
+                "status": row["status"], "seen_at": row["seen_at"],
+            })
+    ai_by_id: dict[int, Any] = {}
+    for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
+        placeholders = ",".join(["?"] * len(chunk))
+        for row in db.execute(f"SELECT id, ai_intent FROM creatives WHERE id IN ({placeholders})", chunk).fetchall():
+            ai_by_id[row["id"]] = row["ai_intent"]
+    for item in items:
+        item["runs"] = runs_by_id.get(item.get("id"), [])[:20]
+        item["ai_intent"] = ai_by_id.get(item.get("id"))  # None = ещё не определён
 
 
 @app.get("/api/v1/creatives")
 def api_list_creatives(
     inn: str = "", platform: str = "", q: str = "", status: str = "", job_id: int | None = None,
     has_advertiser: bool | None = None, has_app: bool | None = None, has_discount: bool | None = None,
-    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "",
+    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "", ai_intent: str = "",
     date_from: str = "", date_to: str = "",
     sort: str = "recent", limit: int = 50, offset: int = 0,
     principal: dict = Depends(public_api_principal),
@@ -3455,6 +3645,18 @@ def api_list_creatives(
             else:
                 where_parts.append(_intent_exists_sql("c", intents))
                 params.extend(intents)
+        ai_list = [x.strip().lower() for x in (ai_intent or "").split(",") if x.strip()]
+        if ai_list:
+            if "__pending__" in ai_list:
+                ai_list = [x for x in ai_list if x != "__pending__"]
+                ai_sql = "c.ai_intent IS NULL"
+                if ai_list:
+                    ai_sql = f"(c.ai_intent IS NULL OR PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ai_list))}))"
+                    params.extend(ai_list)
+                where_parts.append(ai_sql)
+            else:
+                where_parts.append(f"PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ai_list))})")
+                params.extend(ai_list)
         if inn:
             joins.append("JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id")
             where_parts.append("a.inn=?")
@@ -3523,6 +3725,22 @@ def api_list_platforms(principal: dict = Depends(public_api_principal)):
     with closing(connect()) as db:
         rows = db.execute("SELECT platform, COUNT(*) n FROM creatives GROUP BY platform ORDER BY n DESC").fetchall()
     return {"items": [{"platform": r["platform"], "creatives_count": r["n"]} for r in rows]}
+
+
+@app.get("/api/v1/ai-intents")
+def api_list_ai_intents(principal: dict = Depends(public_api_principal)):
+    """Интенты креативов, определённые Gemini (о чём реклама на самом деле) — для фильтра
+    библиотеки. НЕ то же самое, что /api/v1/intents (ключевые слова запусков)."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT MIN(ai_intent) AS intent, COUNT(*) AS n FROM creatives WHERE ai_intent IS NOT NULL "
+            "GROUP BY PYLOWER(ai_intent) ORDER BY (PYLOWER(MIN(ai_intent))=?) ASC, n DESC LIMIT 500", (aii.UNKNOWN,),
+        ).fetchall()
+        pending = db.execute("SELECT COUNT(*) FROM creatives WHERE ai_intent IS NULL").fetchone()[0]
+        total = db.execute("SELECT COUNT(*) FROM creatives").fetchone()[0]
+    return {"items": [{"intent": r["intent"], "creatives_count": r["n"]} for r in rows],
+            "pending": pending, "total": total, "model": aii.last_model_used}
 
 
 @app.get("/api/v1/intents")
@@ -3712,7 +3930,7 @@ def api_create_run(payload: RunCreateIn, principal: dict = Depends(public_api_pr
     city, key_text = payload.city.strip(), payload.key_text.strip()
     with closing(connect()) as db:
         active = db.execute(
-            "SELECT COUNT(*) FROM jobs WHERE owner_user_id=? AND status IN ('queued','running')", (user_id,)
+            "SELECT COUNT(*) FROM jobs WHERE owner_user_id=? AND schedule_id IS NULL AND status IN ('queued','running')", (user_id,)
         ).fetchone()[0]
         if active >= 3:
             raise HTTPException(status_code=429, detail="У вас уже 3 запуска в очереди/выполняются — подождите их завершения")
@@ -3725,6 +3943,90 @@ def api_create_run(payload: RunCreateIn, principal: dict = Depends(public_api_pr
     return {"id": job_id, "status": "queued", "city": city, "key_text": key_text}
 
 
+class ScheduleCreateIn(BaseModel):
+    city: str = Field(min_length=1, max_length=100)
+    key_text: str = Field(min_length=1, max_length=300)
+    runs_per_day: int = Field(ge=1, le=24)
+    duration_days: int
+
+
+def _schedule_dict(r) -> dict[str, Any]:
+    d = dict(r)
+    d["runs_total"] = d["runs_per_day"] * d["duration_days"]
+    return d
+
+
+@app.post("/api/v1/schedules")
+def api_create_schedule(payload: ScheduleCreateIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    if payload.duration_days not in SCHEDULE_DAYS:
+        raise HTTPException(status_code=422, detail="Длительность: 7, 14 или 30 дней")
+    city, key_text = payload.city.strip(), payload.key_text.strip()
+    if not city or not key_text:
+        raise HTTPException(status_code=422, detail="Укажите город и запрос")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    with closing(connect()) as db:
+        active = db.execute(
+            "SELECT COUNT(*) FROM scan_schedules WHERE owner_user_id=? AND status IN ('active','paused')", (user_id,)
+        ).fetchone()[0]
+        if active >= 10:
+            raise HTTPException(status_code=429, detail="Уже 10 активных расписаний — остановите ненужные")
+        cur = db.execute(
+            "INSERT INTO scan_schedules(owner_user_id,city,key_text,runs_per_day,duration_days,created_at,end_at,next_run_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (user_id, city, key_text, payload.runs_per_day, payload.duration_days, now.isoformat(),
+             (now + timedelta(days=payload.duration_days)).isoformat(), now.isoformat()),
+        )
+        db.commit()
+        sid = cur.lastrowid
+    _sched_tick()  # первый запуск ставим в очередь сразу, а не через 30 секунд
+    with closing(connect()) as db:
+        row = db.execute("SELECT * FROM scan_schedules WHERE id=?", (sid,)).fetchone()
+    return _schedule_dict(row)
+
+
+@app.get("/api/v1/schedules")
+def api_list_schedules(principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT * FROM scan_schedules WHERE owner_user_id=? ORDER BY "
+            "CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, id DESC LIMIT 100", (user_id,)
+        ).fetchall()
+    return {"items": [_schedule_dict(r) for r in rows]}
+
+
+class ScheduleActionIn(BaseModel):
+    action: str
+
+
+@app.post("/api/v1/schedules/{schedule_id}/action")
+def api_schedule_action(schedule_id: int, payload: ScheduleActionIn, principal: dict = Depends(public_api_principal)):
+    """pause | resume | cancel. Уже поставленные в очередь jobs не трогаем."""
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        sc = db.execute("SELECT * FROM scan_schedules WHERE id=? AND owner_user_id=?", (schedule_id, user_id)).fetchone()
+        if not sc:
+            raise HTTPException(status_code=404, detail="Расписание не найдено")
+        if sc["status"] in ("finished", "cancelled"):
+            raise HTTPException(status_code=409, detail="Расписание уже завершено")
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        if payload.action == "pause" and sc["status"] == "active":
+            db.execute("UPDATE scan_schedules SET status='paused' WHERE id=?", (schedule_id,))
+        elif payload.action == "resume" and sc["status"] == "paused":
+            interval = timedelta(hours=24 / sc["runs_per_day"])
+            db.execute("UPDATE scan_schedules SET status='active',next_run_at=? WHERE id=?",
+                       ((now + interval).isoformat(), schedule_id))
+        elif payload.action == "cancel":
+            db.execute("UPDATE scan_schedules SET status='cancelled',next_run_at=NULL,finished_at=? WHERE id=?",
+                       (now.isoformat(), schedule_id))
+        else:
+            raise HTTPException(status_code=422, detail="Недопустимое действие")
+        db.commit()
+        row = db.execute("SELECT * FROM scan_schedules WHERE id=?", (schedule_id,)).fetchone()
+    return _schedule_dict(row)
+
+
 @app.get("/api/v1/runs")
 def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
@@ -3732,7 +4034,7 @@ def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(pu
     with closing(connect()) as db:
         total = db.execute("SELECT COUNT(*) FROM jobs WHERE owner_user_id=?", (user_id,)).fetchone()[0]
         rows = db.execute(
-            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text "
+            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text,schedule_id "
             "FROM jobs WHERE owner_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
             (user_id, limit, offset),
         ).fetchall()
