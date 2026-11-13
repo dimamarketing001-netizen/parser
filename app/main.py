@@ -1097,6 +1097,10 @@ def init_ai_intent() -> None:
             if col not in cols:
                 db.execute(f"ALTER TABLE creatives ADD COLUMN {col} {typ}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_ai_intent ON creatives(ai_intent)")
+        # Решения Gemini «подходит ли интент креатива под ключевое слово запуска» (кэш пар).
+        db.execute("""CREATE TABLE IF NOT EXISTS intent_keyword_match (
+          keyword_key TEXT NOT NULL, intent_key TEXT NOT NULL, match INTEGER NOT NULL,
+          model TEXT, judged_at TEXT, PRIMARY KEY(keyword_key, intent_key))""")
         # Креативы совсем без текста классифицировать нечем — помечаем сразу, без вызова Gemini.
         db.execute(
             "UPDATE creatives SET ai_intent=?, ai_intent_at=?, ai_intent_model='no-text' "
@@ -1110,10 +1114,63 @@ init_ai_intent()
 _ai_intent_fail_counts: dict[int, int] = {}
 
 
+_judge_backoff: dict[str, float] = {}
+_judge_missing: dict[tuple[str, str], int] = {}
+
+
+def _judge_pending_matches() -> bool:
+    """Gemini решает, подходит ли ИНТЕНТ креатива под ключевое слово запуска (пары кэшируются в
+    intent_keyword_match). Одна пачка = одно ключевое слово + до 40 его ещё не оценённых интентов."""
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT j.key_text AS kw, MIN(c.ai_intent) AS intent FROM jobs j "
+            "JOIN occurrences o ON o.job_id=j.id JOIN creatives c ON c.id=o.creative_id "
+            "WHERE c.ai_intent IS NOT NULL AND c.ai_intent<>? AND j.key_text IS NOT NULL AND TRIM(j.key_text)<>'' "
+            "AND NOT EXISTS (SELECT 1 FROM intent_keyword_match m WHERE m.keyword_key=PYLOWER(j.key_text) "
+            "AND m.intent_key=PYLOWER(c.ai_intent)) GROUP BY PYLOWER(j.key_text), PYLOWER(c.ai_intent) "
+            "ORDER BY MAX(j.id) DESC LIMIT 400", (aii.UNKNOWN,),
+        ).fetchall()
+        now_m = time.monotonic()
+        by_kw: dict[str, list[str]] = {}
+        for r in rows:
+            kw = r["kw"]
+            if _judge_backoff.get(_pylower(kw), 0) > now_m:
+                continue
+            if _intent_stems(kw) & _intent_stems(r["intent"]):
+                continue  # совпадение основы считаем без Gemini
+            by_kw.setdefault(kw, []).append(r["intent"])
+        if not by_kw:
+            return False
+        kw, intents = next(iter(by_kw.items()))
+        intents = intents[:40]
+        result = aii.judge_intent_matches(kw, intents, on_hard_failure=_gemini_alert)
+        if result is None:
+            _judge_backoff[_pylower(kw)] = time.monotonic() + 600
+            return False
+        stamp = now_iso()
+        for it in intents:
+            k = it.strip().lower()
+            if k in result:
+                db.execute("INSERT OR REPLACE INTO intent_keyword_match(keyword_key,intent_key,match,model,judged_at) VALUES(?,?,?,?,?)",
+                           (_pylower(kw), k, 1 if result[k] else 0, aii.last_model_used, stamp))
+                _judge_missing.pop((_pylower(kw), k), None)
+            else:
+                n = _judge_missing.get((_pylower(kw), k), 0) + 1
+                _judge_missing[(_pylower(kw), k)] = n
+                if n >= 2:  # модель дважды «забыла» интент — считаем неподходящим, чтобы не зациклиться
+                    db.execute("INSERT OR REPLACE INTO intent_keyword_match(keyword_key,intent_key,match,model,judged_at) VALUES(?,?,0,?,?)",
+                               (_pylower(kw), k, "missing", stamp))
+        db.commit()
+        return True
+
+
 def _process_ai_intent_batch() -> bool:
     """Один шаг фонового цикла: до BATCH_SIZE неразмеченных креативов (новые первыми) — один
     запрос к Gemini на пачку. True, если что-то обработали. При сбое пачки пробуем по одному;
-    креатив, который 3 раза подряд не размечается, до перезапуска сервиса пропускаем."""
+    креатив, который 3 раза подряд не размечается, до перезапуска сервиса пропускаем.
+    Сначала — оценка пар «ключевое слово → интент» (их мало, а от них зависят цифры «по интенту»)."""
+    if _judge_pending_matches():
+        return True
     with closing(connect()) as db:
         skip = [i for i, n in _ai_intent_fail_counts.items() if n >= 3]
         skip_sql = f" AND id NOT IN ({','.join('?' * len(skip))})" if skip else ""
@@ -4119,44 +4176,42 @@ def _job_stage(db: sqlite3.Connection, job_id: int) -> dict[str, Any] | None:
 
 def _job_relevance(db: sqlite3.Connection, job_id: int, key_text: str) -> dict[str, Any]:
     """Сколько креативов запуска ПОДХОДЯТ под его ключевое слово (2026-11-13).
-    Креатив подходит, если совпадает хотя бы один сигнал: (1) интент креатива от Gemini
-    (ai_intent) разделяет основу слова с ключевым словом, (2) то же для заголовка+текста,
-    (3) смысловая близость embedding к ключевому слову ≥ SEMANTIC_INTENT_THRESHOLD.
-    Креатив, у которого пока нет ни интента, ни embedding и ничего не совпало, считается
-    «ещё определяется» (pending), а не «не подходит». Возвращает
-    {found, relevant, pending, ids:{creative_id: True|False|None}}."""
+    Основа — ИНТЕНТ креатива (ai_intent от Gemini): (1) его основа слова совпадает с основой
+    ключевого слова («пенсии и льготы» ↔ «увеличение пенсии») либо (2) Gemini признал пару
+    «ключевое слово → интент» подходящей (кэш intent_keyword_match). Реклама, просто нацеленная
+    на ту же аудиторию («имплантация зубов для пенсионеров»), НЕ подходит. Раньше учитывалась
+    ещё близость embedding ≥ 0.62 и совпадение слов в тексте — давало ложные «по теме»
+    (недвижимость, стоматология). Если пара ещё не оценена или интент не определён —
+    «ещё определяется» (None). Возвращает {found, relevant, pending, ids:{id: True|False|None}}."""
+    kw_key = _pylower(key_text)
     stamp_row = db.execute(
-        "SELECT COUNT(DISTINCT c.id), SUM(c.ai_intent IS NOT NULL), SUM(ce.creative_id IS NOT NULL) "
-        "FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
-        "LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id WHERE o.job_id=?", (job_id,),
+        "SELECT COUNT(DISTINCT c.id), SUM(c.ai_intent IS NOT NULL) FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
+        "WHERE o.job_id=?", (job_id,),
     ).fetchone()
-    stamp = (job_id, key_text, tuple(stamp_row))
+    judged = db.execute("SELECT COUNT(*) FROM intent_keyword_match WHERE keyword_key=?", (kw_key,)).fetchone()[0]
+    stamp = (job_id, key_text, tuple(stamp_row), judged)
     cached = _job_rel_cache.get(stamp[:2])
     if cached and cached["stamp"] == stamp:
         return cached["data"]
     kw_stems = _intent_stems(key_text)
-    kw_vec = _get_cached_intent_embedding(db, key_text)
+    match_map = {r["intent_key"]: bool(r["match"]) for r in db.execute(
+        "SELECT intent_key, match FROM intent_keyword_match WHERE keyword_key=?", (kw_key,)).fetchall()}
     rows = db.execute(
-        "SELECT c.id, c.title, c.description, c.ai_intent, ce.embedding, ce.skip_reason "
-        "FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
-        "LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id WHERE o.job_id=? GROUP BY c.id", (job_id,),
+        "SELECT c.id, c.title, c.description, c.ai_intent FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
+        "WHERE o.job_id=? GROUP BY c.id", (job_id,),
     ).fetchall()
     ids: dict[int, bool | None] = {}
     for r in rows:
         ai = r["ai_intent"]
-        ok = False
-        if kw_stems and ai and ai != aii.UNKNOWN and kw_stems & _intent_stems(ai):
-            ok = True
-        elif kw_stems and kw_stems & _intent_stems((r["title"] or "") + " " + (r["description"] or "")):
-            ok = True
-        elif kw_vec is not None and r["embedding"] and not r["skip_reason"] and len(r["embedding"]) > 0:
-            ok = emb.cosine_similarity(kw_vec, emb.unpack_embedding(r["embedding"])) >= SEMANTIC_INTENT_THRESHOLD
-        if ok:
+        if ai is None:
+            ids[r["id"]] = None  # интент ещё не определён
+        elif ai == aii.UNKNOWN:
+            # тему по тексту не поняли — засчитываем только прямое совпадение слов запроса
+            ids[r["id"]] = True if kw_stems & _intent_stems((r["title"] or "") + " " + (r["description"] or "")) else False
+        elif kw_stems & _intent_stems(ai):
             ids[r["id"]] = True
-        elif ai is None and not (r["embedding"] and not r["skip_reason"]):
-            ids[r["id"]] = None
         else:
-            ids[r["id"]] = False
+            ids[r["id"]] = match_map.get(ai.strip().lower())  # True/False от Gemini или None — ещё не оценено
     data = {
         "found": len(ids),
         "relevant": sum(1 for v in ids.values() if v is True),

@@ -56,6 +56,12 @@ def test_job_relevance(monkeypatch):
                        (i, f"r{i}", "dzen", "x.ru", t, d, "2026-11-13T00:00:00+00:00", ai))
             db.execute("INSERT INTO occurrences(job_id,creative_id,platform,observed_at) VALUES(901,?,?,?)", (i, "dzen", "2026-11-13T00:00:01+00:00"))
         db.commit()
+        # пара «ключевое слово → интент» ещё не оценена Gemini => «определяется»
+        rel0 = m._job_relevance(db, 901, "увеличение пенсии")
+        assert rel0["ids"][9100] is None and rel0["ids"][9101] is True and rel0["ids"][9102] is None
+        # Gemini оценил: «кроссовки» не подходят
+        db.execute("INSERT INTO intent_keyword_match(keyword_key,intent_key,match) VALUES('увеличение пенсии','кроссовки',0)")
+        db.commit()
         rel = m._job_relevance(db, 901, "увеличение пенсии")
     assert rel["found"] == 3 and rel["relevant"] == 1 and rel["pending"] == 1
     assert rel["ids"][9101] is True and rel["ids"][9100] is False and rel["ids"][9102] is None

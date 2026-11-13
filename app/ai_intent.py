@@ -105,18 +105,21 @@ def classify_batch(
         known=", ".join(known_intents[:MAX_KNOWN]) or "пока нет",
         items=json.dumps(payload, ensure_ascii=False),
     )
-    config = genai_types.GenerateContentConfig(
-        temperature=0,
-        response_mime_type="application/json",
-        response_schema={
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {"id": {"type": "INTEGER"}, "intent": {"type": "STRING"}},
-                "required": ["id", "intent"],
-            },
-        },
-    )
+    schema = {
+        "type": "ARRAY",
+        "items": {"type": "OBJECT", "properties": {"id": {"type": "INTEGER"}, "intent": {"type": "STRING"}}, "required": ["id", "intent"]},
+    }
+    data = _call_json(prompt, schema, max_wait_seconds, on_hard_failure)
+    if data is None:
+        return None
+    wanted = {it["id"] for it in items}
+    return {int(row["id"]): normalize_intent(row.get("intent")) for row in data if int(row["id"]) in wanted}
+
+
+def _call_json(prompt: str, schema: dict, max_wait_seconds: float = 3600, on_hard_failure: Callable[[str], None] | None = None) -> Any | None:
+    """Один JSON-запрос к Gemini с перебором моделей (дневная квота считается по модели) и
+    ожиданием минутных 429. Возвращает разобранный JSON либо None при жёстком сбое."""
+    config = genai_types.GenerateContentConfig(temperature=0, response_mime_type="application/json", response_schema=schema)
     waited = 0.0
     global last_model_used
     while True:
@@ -140,10 +143,8 @@ def classify_batch(
             client = _client()  # держим ссылку: временный клиент закрывается GC до конца запроса
             resp = client.models.generate_content(model=model, contents=prompt, config=config)
             data = json.loads(resp.text)
-            wanted = {it["id"] for it in items}
-            out = {int(row["id"]): normalize_intent(row.get("intent")) for row in data if int(row["id"]) in wanted}
             last_model_used = model
-            return out
+            return data
         except Exception as exc:  # noqa: BLE001
             delay = emb.parse_retry_delay_seconds(exc)
             if delay is not None and _is_daily_quota(exc):
@@ -166,9 +167,40 @@ def classify_batch(
             _blocked_until[model] = time.monotonic() + 600
             print(f"[ai-intent] {model}: сбой ({type(exc).__name__}: {str(exc)[:160]}), пробую другую модель", flush=True)
             if all(_blocked_until.get(m, 0) > time.monotonic() for m in MODELS):
-                msg = f"ai-intent batch failed on every model, last: {type(exc).__name__}: {str(exc)[:250]}"
+                msg = f"ai-intent call failed on every model, last: {type(exc).__name__}: {str(exc)[:250]}"
                 if on_hard_failure:
                     on_hard_failure(msg)
                 for m in MODELS:
                     _blocked_until.pop(m, None)
                 return None
+
+
+_JUDGE_PROMPT = """Поисковый запрос (ключевое слово запуска): «{kw}».
+Для каждого интента рекламы определи, подходит ли реклама с таким интентом под этот запрос.
+
+Подходит — ТОЛЬКО если реклама про ту же тему, товар или услугу, что и запрос, то есть человек,
+искавший этот запрос, получил ответ по теме. НЕ подходит реклама, которая просто нацелена на ту
+же аудиторию или находится рядом по смыслу (например, для запроса «увеличение пенсии» подходят
+«пенсии и льготы», «перерасчёт пенсии», «юридическая помощь по пенсиям»; НЕ подходят
+«имплантация зубов», «недвижимость», «автомобили», «вакансии», даже если реклама адресована пенсионерам).
+Если интент слишком общий и сам не называет тему запроса («юридические услуги», «финансы», «медицинские услуги», «банк») — тоже НЕ подходит.
+
+Интенты: {intents}
+
+Верни JSON-массив объектов {{"intent": "<интент ровно как в списке>", "match": true|false}} — по одному на каждый интент."""
+
+
+def judge_intent_matches(keyword: str, intents: list[str], on_hard_failure: Callable[[str], None] | None = None) -> dict[str, bool] | None:
+    """{интент(lower): подходит ли под ключевое слово запуска}. None — жёсткий сбой (повторим позже)."""
+    if not intents:
+        return {}
+    schema = {
+        "type": "ARRAY",
+        "items": {"type": "OBJECT", "properties": {"intent": {"type": "STRING"}, "match": {"type": "BOOLEAN"}}, "required": ["intent", "match"]},
+    }
+    prompt = _JUDGE_PROMPT.format(kw=keyword, intents=json.dumps(intents, ensure_ascii=False))
+    data = _call_json(prompt, schema, on_hard_failure=on_hard_failure)
+    if data is None:
+        return None
+    out = {str(row.get("intent", "")).strip().lower(): bool(row.get("match")) for row in data}
+    return {i.lower(): out[i.lower()] for i in intents if i.lower() in out}
