@@ -1025,6 +1025,10 @@ def init_schedules() -> None:
         job_cols = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
         if "schedule_id" not in job_cols:
             db.execute("ALTER TABLE jobs ADD COLUMN schedule_id INTEGER")
+        if "attempts" not in job_cols:
+            db.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "retry_at" not in job_cols:
+            db.execute("ALTER TABLE jobs ADD COLUMN retry_at TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS ix_jobs_schedule ON jobs(schedule_id)")
         db.commit()
 
@@ -2344,7 +2348,8 @@ def worker_poll(payload: PollIn, authorization: str | None = Header(default=None
             "ON CONFLICT(worker_id) DO UPDATE SET hostname=excluded.hostname,version=excluded.version,last_seen=excluded.last_seen",
             (payload.worker_id, payload.hostname, payload.version, now_iso()),
         )
-        job = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+        job = db.execute("SELECT * FROM jobs WHERE status='queued' AND (retry_at IS NULL OR retry_at<=?) ORDER BY id LIMIT 1",
+                         (now_iso(),)).fetchone()
         if not job:
             db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=? WHERE worker_id=?", (now_iso(), payload.worker_id))
             db.commit()
@@ -2786,15 +2791,35 @@ def worker_site_results(job_id: int, payload: SiteResultsBatch, authorization: s
     return {"ok": True, "sites_received": len(payload.sites)}
 
 
+JOB_MAX_ATTEMPTS = int(os.getenv("PARSYA_JOB_MAX_ATTEMPTS", "10"))
+JOB_RETRY_DELAYS_MIN = [2, 5, 10, 15, 20, 30]  # дальше — каждые 30 минут
+
+
 @app.post("/api/worker/jobs/{job_id}/finish")
 def worker_finish(job_id: int, payload: FinishIn, authorization: str | None = Header(default=None)):
     worker_auth(authorization)
     with closing(connect()) as db:
-        job = db.execute("SELECT worker_id,owner_user_id,key_text,city FROM jobs WHERE id=?", (job_id,)).fetchone()
+        job = db.execute("SELECT worker_id,owner_user_id,key_text,city,attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not job:
             raise HTTPException(status_code=404, detail="Задание не найдено")
+        if payload.status == "failed":
+            done = (job["attempts"] or 0) + 1
+            if done < JOB_MAX_ATTEMPTS:
+                # Сбой чаще всего инфраструктурный (WSL без сети/DNS, VPN) — пробуем снова позже, с растущей паузой
+                delay = JOB_RETRY_DELAYS_MIN[min(done - 1, len(JOB_RETRY_DELAYS_MIN) - 1)]
+                retry_at = (datetime.now(timezone.utc) + timedelta(minutes=delay)).isoformat(timespec="seconds")
+                note = f"\n\n[control] Попытка {done} из {JOB_MAX_ATTEMPTS} не удалась ({payload.error or 'ошибка'}). Повтор через {delay} мин.\n"
+                db.execute(
+                    "UPDATE jobs SET status='queued',attempts=?,retry_at=?,started_at=NULL,worker_id=NULL,finished_at=NULL,"
+                    "exit_code=?,error_text=?,log_text=COALESCE(log_text,'')||? WHERE id=?",
+                    (done, retry_at, payload.exit_code, f"Попытка {done} из {JOB_MAX_ATTEMPTS}: {payload.error or 'ошибка'}", note, job_id))
+                if job["worker_id"]:
+                    db.execute("UPDATE workers SET state='idle',current_job_id=NULL,last_seen=?,last_error=? WHERE worker_id=?",
+                               (now_iso(), payload.error or None, job["worker_id"]))
+                db.commit()
+                return {"ok": True, "retry_at": retry_at, "attempt": done}
         db.execute(
-            "UPDATE jobs SET status=?,finished_at=?,exit_code=?,error_text=?,result_json=?,total_creatives=(SELECT COUNT(DISTINCT creative_id) FROM occurrences WHERE job_id=?) WHERE id=?",
+            "UPDATE jobs SET attempts=attempts+1,status=?,finished_at=?,exit_code=?,error_text=?,result_json=?,total_creatives=(SELECT COUNT(DISTINCT creative_id) FROM occurrences WHERE job_id=?) WHERE id=?",
             (payload.status, now_iso(), payload.exit_code, payload.error or None,
              json.dumps(payload.result, ensure_ascii=False), job_id, job_id),
         )
