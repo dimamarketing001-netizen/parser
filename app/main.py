@@ -3743,19 +3743,23 @@ def api_list_platforms(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/ai-intents")
-def api_list_ai_intents(principal: dict = Depends(public_api_principal)):
+def api_list_ai_intents(job_id: int | None = None, principal: dict = Depends(public_api_principal)):
     """Интенты креативов, определённые Gemini (о чём реклама на самом деле) — для фильтра
-    библиотеки. НЕ то же самое, что /api/v1/intents (ключевые слова запусков)."""
+    библиотеки. С job_id — только интенты креативов этого запуска, без — все. НЕ то же
+    самое, что /api/v1/intents (ключевые слова запусков)."""
     require_user_principal(principal)
+    scope = " AND c.id IN (SELECT creative_id FROM occurrences WHERE job_id=?)" if job_id is not None else ""
+    args: list[Any] = [job_id] if job_id is not None else []
     with closing(connect()) as db:
         rows = db.execute(
-            "SELECT MIN(ai_intent) AS intent, COUNT(*) AS n FROM creatives WHERE ai_intent IS NOT NULL "
-            "GROUP BY PYLOWER(ai_intent) ORDER BY (PYLOWER(MIN(ai_intent))=?) ASC, n DESC LIMIT 500", (aii.UNKNOWN,),
+            "SELECT MIN(c.ai_intent) AS intent, COUNT(*) AS n FROM creatives c WHERE c.ai_intent IS NOT NULL" + scope +
+            " GROUP BY PYLOWER(c.ai_intent) ORDER BY (PYLOWER(MIN(c.ai_intent))=?) ASC, n DESC LIMIT 500",
+            args + [aii.UNKNOWN],
         ).fetchall()
-        pending = db.execute("SELECT COUNT(*) FROM creatives WHERE ai_intent IS NULL").fetchone()[0]
-        total = db.execute("SELECT COUNT(*) FROM creatives").fetchone()[0]
+        pending = db.execute("SELECT COUNT(*) FROM creatives c WHERE c.ai_intent IS NULL" + scope, args).fetchone()[0]
+        total = db.execute("SELECT COUNT(*) FROM creatives c WHERE 1=1" + scope, args).fetchone()[0]
     return {"items": [{"intent": r["intent"], "creatives_count": r["n"]} for r in rows],
-            "pending": pending, "total": total, "model": aii.last_model_used}
+            "pending": pending, "total": total, "model": aii.last_model_used, "job_id": job_id}
 
 
 @app.get("/api/v1/intents")

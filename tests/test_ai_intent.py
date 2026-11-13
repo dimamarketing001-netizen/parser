@@ -67,3 +67,12 @@ def test_job_relevance(monkeypatch):
     runs = m.api_list_runs(principal=pr)
     assert [r for r in runs["items"] if r["id"] == 901][0]["relevance"]["relevant"] == 1
     assert m.api_run_detail(901, principal=pr)["relevance"]["found"] == 3
+
+
+def test_ai_intents_scoped_to_job():
+    pr = {"kind": "user", "user_id": 1}
+    everything = m.api_list_ai_intents(principal=pr)
+    scoped = m.api_list_ai_intents(job_id=901, principal=pr)
+    assert scoped["total"] == 3 and scoped["job_id"] == 901
+    assert {x["intent"] for x in scoped["items"]} == {"кроссовки", "пенсии и льготы"} and scoped["pending"] == 1
+    assert everything["total"] >= scoped["total"]
