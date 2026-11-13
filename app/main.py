@@ -4252,15 +4252,19 @@ def _relevance_public(rel: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/api/v1/runs")
-def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
+def api_list_runs(limit: int = 25, offset: int = 0, schedule_id: int | None = None, principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
-        total = db.execute("SELECT COUNT(*) FROM jobs WHERE owner_user_id=?", (user_id,)).fetchone()[0]
+        flt, args = "owner_user_id=?", [user_id]
+        if schedule_id is not None:
+            flt += " AND schedule_id=?"
+            args.append(schedule_id)
+        total = db.execute(f"SELECT COUNT(*) FROM jobs WHERE {flt}", args).fetchone()[0]
         rows = db.execute(
-            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text,schedule_id "
-            "FROM jobs WHERE owner_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
-            (user_id, limit, offset),
+            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text,schedule_id,attempts,retry_at "
+            f"FROM jobs WHERE {flt} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*args, limit, offset),
         ).fetchall()
         items = [dict(r) for r in rows]
         for it in items:
