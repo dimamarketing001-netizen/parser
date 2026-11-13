@@ -3625,7 +3625,7 @@ def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None
 def api_list_creatives(
     inn: str = "", platform: str = "", q: str = "", status: str = "", job_id: int | None = None,
     has_advertiser: bool | None = None, has_app: bool | None = None, has_discount: bool | None = None,
-    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "", ai_intent: str = "",
+    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "", ai_intent: str = "", only_relevant: str = "",
     date_from: str = "", date_to: str = "",
     sort: str = "recent", limit: int = 50, offset: int = 0,
     principal: dict = Depends(public_api_principal),
@@ -3683,10 +3683,22 @@ def api_list_creatives(
             joins.append("JOIN creative_utm cu_keyword ON cu_keyword.creative_id=c.id")
             where_parts.append("cu_keyword.utm_term=?")
             params.append(keyword)
+        job_rel: dict[int, bool | None] | None = None
         if job_id is not None:
             joins.append("JOIN occurrences jo ON jo.creative_id=c.id")
             where_parts.append("jo.job_id=?")
             params.append(job_id)
+            jrow = db.execute("SELECT key_text FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if jrow:
+                job_rel = _job_relevance(db, job_id, jrow["key_text"])["ids"]
+                if only_relevant in ("1", "yes", "true"):
+                    keep = [i for i, v in job_rel.items() if v is True] or [-1]
+                    where_parts.append(f"c.id IN ({','.join(['?'] * len(keep))})")
+                    params.extend(keep)
+                elif only_relevant == "no":
+                    keep = [i for i, v in job_rel.items() if v is False] or [-1]
+                    where_parts.append(f"c.id IN ({','.join(['?'] * len(keep))})")
+                    params.extend(keep)
         if platform:
             where_parts.append("c.platform=?")
             params.append(platform)
@@ -3717,6 +3729,9 @@ def api_list_creatives(
         ).fetchall()
         items = [_creative_row_to_dict(r) for r in rows]
         _attach_intents(db, items)
+        if job_rel is not None:
+            for it in items:
+                it["job_match"] = job_rel.get(it["id"])  # True — по теме, False — не по теме, None — ещё определяется
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -4027,6 +4042,63 @@ def api_schedule_action(schedule_id: int, payload: ScheduleActionIn, principal: 
     return _schedule_dict(row)
 
 
+_job_rel_cache: dict[tuple, dict[str, Any]] = {}
+
+
+def _job_relevance(db: sqlite3.Connection, job_id: int, key_text: str) -> dict[str, Any]:
+    """Сколько креативов запуска ПОДХОДЯТ под его ключевое слово (2026-11-13).
+    Креатив подходит, если совпадает хотя бы один сигнал: (1) интент креатива от Gemini
+    (ai_intent) разделяет основу слова с ключевым словом, (2) то же для заголовка+текста,
+    (3) смысловая близость embedding к ключевому слову ≥ SEMANTIC_INTENT_THRESHOLD.
+    Креатив, у которого пока нет ни интента, ни embedding и ничего не совпало, считается
+    «ещё определяется» (pending), а не «не подходит». Возвращает
+    {found, relevant, pending, ids:{creative_id: True|False|None}}."""
+    stamp_row = db.execute(
+        "SELECT COUNT(DISTINCT c.id), SUM(c.ai_intent IS NOT NULL), SUM(ce.creative_id IS NOT NULL) "
+        "FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
+        "LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id WHERE o.job_id=?", (job_id,),
+    ).fetchone()
+    stamp = (job_id, key_text, tuple(stamp_row))
+    cached = _job_rel_cache.get(stamp[:2])
+    if cached and cached["stamp"] == stamp:
+        return cached["data"]
+    kw_stems = _intent_stems(key_text)
+    kw_vec = _get_cached_intent_embedding(db, key_text)
+    rows = db.execute(
+        "SELECT c.id, c.title, c.description, c.ai_intent, ce.embedding, ce.skip_reason "
+        "FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
+        "LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id WHERE o.job_id=? GROUP BY c.id", (job_id,),
+    ).fetchall()
+    ids: dict[int, bool | None] = {}
+    for r in rows:
+        ai = r["ai_intent"]
+        ok = False
+        if kw_stems and ai and ai != aii.UNKNOWN and kw_stems & _intent_stems(ai):
+            ok = True
+        elif kw_stems and kw_stems & _intent_stems((r["title"] or "") + " " + (r["description"] or "")):
+            ok = True
+        elif kw_vec is not None and r["embedding"] and not r["skip_reason"] and len(r["embedding"]) > 0:
+            ok = emb.cosine_similarity(kw_vec, emb.unpack_embedding(r["embedding"])) >= SEMANTIC_INTENT_THRESHOLD
+        if ok:
+            ids[r["id"]] = True
+        elif ai is None and not (r["embedding"] and not r["skip_reason"]):
+            ids[r["id"]] = None
+        else:
+            ids[r["id"]] = False
+    data = {
+        "found": len(ids),
+        "relevant": sum(1 for v in ids.values() if v is True),
+        "pending": sum(1 for v in ids.values() if v is None),
+        "ids": ids,
+    }
+    _job_rel_cache[stamp[:2]] = {"stamp": stamp, "data": data}
+    return data
+
+
+def _relevance_public(rel: dict[str, Any]) -> dict[str, Any]:
+    return {k: rel[k] for k in ("found", "relevant", "pending")}
+
+
 @app.get("/api/v1/runs")
 def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
@@ -4038,7 +4110,11 @@ def api_list_runs(limit: int = 25, offset: int = 0, principal: dict = Depends(pu
             "FROM jobs WHERE owner_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
             (user_id, limit, offset),
         ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+        items = [dict(r) for r in rows]
+        for it in items:
+            if (it.get("total_creatives") or 0) > 0 or it["status"] in ("running", "succeeded"):
+                it["relevance"] = _relevance_public(_job_relevance(db, it["id"], it["key_text"]))
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/v1/runs/{job_id}")
@@ -4052,10 +4128,12 @@ def api_run_detail(job_id: int, principal: dict = Depends(public_api_principal))
             "SELECT platform,status,unique_creatives,partial_creatives,ad_signal_detected,error_text "
             "FROM site_results WHERE job_id=? ORDER BY platform", (job_id,),
         ).fetchall()
+        relevance = _relevance_public(_job_relevance(db, job["id"], job["key_text"]))
     return {
         "id": job["id"], "status": job["status"], "city": job["city"], "key_text": job["key_text"],
         "created_at": job["created_at"], "started_at": job["started_at"], "finished_at": job["finished_at"],
         "total_creatives": job["total_creatives"], "error_text": job["error_text"],
+        "relevance": relevance,
         "sites": [dict(r) for r in sites],
     }
 

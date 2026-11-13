@@ -42,3 +42,28 @@ def test_classify_filter_and_runs(monkeypatch):
     assert m.api_list_creatives(job_id=900, ai_intent="пенсии и льготы", principal={"kind": "user", "user_id": 1})["total"] == 1
     ai = m.api_list_ai_intents(principal={"kind": "user", "user_id": 1})
     assert ai["pending"] == 0 and {x["intent"] for x in ai["items"]} >= {"кроссовки", "пенсии и льготы"}
+
+
+def test_job_relevance(monkeypatch):
+    with closing(m.connect()) as db:
+        db.execute("INSERT OR IGNORE INTO users(id,email,password_hash,created_at) VALUES(1,'t@t','x','2026-01-01')")
+        db.execute("INSERT INTO jobs(id,status,city,key_text,created_at,owner_user_id) VALUES(901,'running','Москва','увеличение пенсии','2026-11-13T00:00:00+00:00',1)")
+        rows = [(9100, "Беговые кроссовки", "скидка", "кроссовки"),
+                (9101, "Льготы", "для пенсионеров", "пенсии и льготы"),
+                (9102, "Диван", "мебель", None)]
+        for i, t, d, ai in rows:
+            db.execute("INSERT INTO creatives(id,creative_hash,platform,domain,title,description,captured_at,ai_intent) VALUES(?,?,?,?,?,?,?,?)",
+                       (i, f"r{i}", "dzen", "x.ru", t, d, "2026-11-13T00:00:00+00:00", ai))
+            db.execute("INSERT INTO occurrences(job_id,creative_id,platform,observed_at) VALUES(901,?,?,?)", (i, "dzen", "2026-11-13T00:00:01+00:00"))
+        db.commit()
+        rel = m._job_relevance(db, 901, "увеличение пенсии")
+    assert rel["found"] == 3 and rel["relevant"] == 1 and rel["pending"] == 1
+    assert rel["ids"][9101] is True and rel["ids"][9100] is False and rel["ids"][9102] is None
+    pr = {"kind": "user", "user_id": 1}
+    out = m.api_list_creatives(job_id=901, only_relevant="1", principal=pr)
+    assert [x["id"] for x in out["items"]] == [9101] and out["items"][0]["job_match"] is True
+    allj = m.api_list_creatives(job_id=901, principal=pr)
+    assert {x["id"]: x["job_match"] for x in allj["items"]} == {9100: False, 9101: True, 9102: None}
+    runs = m.api_list_runs(principal=pr)
+    assert [r for r in runs["items"] if r["id"] == 901][0]["relevance"]["relevant"] == 1
+    assert m.api_run_detail(901, principal=pr)["relevance"]["found"] == 3
