@@ -4758,3 +4758,10 @@ def admin_embeddings_status(request: Request):
         "creatives_skipped": {r["skip_reason"]: r["n"] for r in done_creatives_skipped},
         "creatives_remaining": remaining_creatives,
     }
+
+
+# «Сайты» ЛК «Реклама» (2026-11-18): домены reg.ru и размещение сайтов (app/sites_infra.py).
+from .sites_infra import build_router as _build_sites_router  # noqa: E402
+
+app.include_router(_build_sites_router(public_api_principal, require_user_principal, ADDAVTO_BASE_URL,
+                                       ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD))
