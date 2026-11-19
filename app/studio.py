@@ -128,6 +128,20 @@ class AICritiqueIn(BaseModel):
     texts: list[str] = Field(default_factory=list, max_length=30)
 
 
+class AIImageIn(BaseModel):
+    prompt: str = Field(min_length=3, max_length=4000)
+    example: str = Field(default="", max_length=MAX_IMAGE_BYTES * 2)
+    format: str = Field(default="square", max_length=20)
+    count: int = Field(default=2, ge=1, le=4)
+
+
+class AIImagePromptIn(BaseModel):
+    brief: str = Field(default="", max_length=3000)
+    example: str = Field(default="", max_length=MAX_IMAGE_BYTES * 2)
+    format: str = Field(default="square", max_length=20)
+    wish: str = Field(default="", max_length=1000)
+
+
 class AIRewriteIn(BaseModel):
     title: str = Field(default="", max_length=600)
     description: str = Field(default="", max_length=3000)
@@ -212,6 +226,12 @@ def _txt(v: Any, n: int) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()[:n]
 
 
+def _ml(v: Any, n: int) -> str:
+    """Текст слоя: переносы строк сохраняем (модель иногда шлёт буквальное «\\n»), до 4 строк."""
+    lines = [re.sub(r"[ \t]+", " ", x).strip() for x in str(v or "").replace("\\n", "\n").splitlines()]
+    return "\n".join(x for x in lines if x)[:n] if any(lines) else ""
+
+
 def sanitize_layers(raw_layers: Any) -> list[dict[str, Any]]:
     """Слои от ИИ → только известные типы/поля, числа в допустимых пределах."""
     out: list[dict[str, Any]] = []
@@ -225,7 +245,7 @@ def sanitize_layers(raw_layers: Any) -> list[dict[str, Any]]:
                 "rotation": _num(l.get("rotation"), 0, 360, 0), "opacity": _num(l.get("opacity"), 0, 100, 100),
                 "flipH": False, "flipV": False, "skewX": 0, "skewY": 0, "blendMode": "normal"}
         if t == "text":
-            text = _txt(l.get("text"), 300)
+            text = _ml(l.get("text"), 300)
             if not text:
                 continue
             base.update(text=text, fontSize=_num(l.get("fontSize"), 1.5, 20, 6), color=_color(l.get("color"), "#111111"),
@@ -305,6 +325,114 @@ CRITIQUE_SYSTEM = """Ты — опытный арт-директор и моде
 Проверь: читается ли оффер за 1 секунду, контраст текста, размер шрифтов на телефоне,
 перегруз текстом (>20% площади — риск отклонения в Директе), заметность CTA, поля,
 запрещённые формулировки (гарантии, «лучший», медицинские обещания), соответствие брифу."""
+
+
+# ---------------------------------------------------------------- генерация изображений
+# Провайдеры по очереди: (1) тот же ИИ-прокси, OpenAI-совместимый /v1/images/* (модель
+# STUDIO_IMAGE_MODEL, по умолчанию gpt-image-2); (2) Gemini (GEMINI_API_KEY, модели
+# STUDIO_GEMINI_IMAGE_MODELS). Ошибки собираем и отдаём понятной фразой — на 19.11.2026
+# у прокси gpt-image-2 «disabled», у Gemini бесплатный тариф без квоты на картинки.
+_ASPECT = {"square": "1:1", "wide": "16:9", "landscape": "16:9", "r45": "4:5", "r43": "4:3", "r34": "3:4", "story": "9:16"}
+_OAI_SIZE = {"1:1": "1024x1024", "16:9": "1536x1024", "4:3": "1536x1024", "4:5": "1024x1536", "3:4": "1024x1536", "9:16": "1024x1536"}
+
+
+class ImageGenError(RuntimeError):
+    pass
+
+
+def _explain(provider: str, status: int, text: str) -> str:
+    t = text.lower()
+    if "disabled" in t:
+        return f"{provider}: модель картинок выключена на стороне сервиса"
+    if status == 429 and "free_tier" in t:
+        return f"{provider}: бесплатный тариф без квоты на картинки — нужно включить оплату"
+    if status == 429:
+        return f"{provider}: превышен лимит запросов, попробуйте через минуту"
+    if "not supported" in t or status == 404:
+        return f"{provider}: модель картинок недоступна"
+    if "safety" in t or "blocked" in t or "policy" in t:
+        return f"{provider}: запрос отклонён фильтром безопасности — переформулируйте"
+    return f"{provider}: ошибка {status}"
+
+
+async def _gen_proxy(prompt: str, example: tuple[str, bytes] | None, aspect: str, n: int) -> list[bytes]:
+    key = os.getenv("STUDIO_AI_API_KEY")
+    if not key:
+        raise ImageGenError("ИИ-прокси: ключ не задан")
+    model = os.getenv("STUDIO_IMAGE_MODEL") or "gpt-image-2"
+    base, headers = _ai_base(), {"Authorization": f"Bearer {key}"}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=15.0)) as http:
+        if example:
+            r = await http.post(base + "/v1/images/edits", headers=headers,
+                                data={"model": model, "prompt": prompt, "n": str(n), "size": _OAI_SIZE.get(aspect, "1024x1024")},
+                                files={"image": ("example." + example[0].split("/")[-1], example[1], example[0])})
+        else:
+            r = await http.post(base + "/v1/images/generations", headers=headers,
+                                json={"model": model, "prompt": prompt, "n": n, "size": _OAI_SIZE.get(aspect, "1024x1024")})
+        if r.status_code >= 400:
+            raise ImageGenError(_explain("ИИ-прокси", r.status_code, r.text))
+        out = []
+        for d in r.json().get("data") or []:
+            if d.get("b64_json"):
+                out.append(base64.b64decode(d["b64_json"]))
+            elif d.get("url"):
+                rr = await http.get(d["url"])
+                if rr.status_code == 200:
+                    out.append(rr.content)
+    if not out:
+        raise ImageGenError("ИИ-прокси: пустой ответ")
+    return out
+
+
+async def _gen_gemini(prompt: str, example: tuple[str, bytes] | None, aspect: str, n: int) -> list[bytes]:
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        raise ImageGenError("Gemini: ключ не задан")
+    models = [m.strip() for m in (os.getenv("STUDIO_GEMINI_IMAGE_MODELS") or "gemini-3.1-flash-image,gemini-2.5-flash-image").split(",") if m.strip()]
+    parts: list[dict[str, Any]] = []
+    if example:
+        parts.append({"inlineData": {"mimeType": example[0], "data": base64.b64encode(example[1]).decode()}})
+    parts.append({"text": prompt})
+    last = "Gemini: нет моделей"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=15.0)) as http:
+        for model in models:
+            out: list[bytes] = []
+            for _ in range(n):
+                r = await http.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                    params={"key": key},
+                                    json={"contents": [{"role": "user", "parts": parts}],
+                                          "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": aspect}}})
+                if r.status_code >= 400:
+                    last = _explain("Gemini", r.status_code, r.text)
+                    break
+                for c in r.json().get("candidates") or []:
+                    for pt in (c.get("content") or {}).get("parts") or []:
+                        if pt.get("inlineData", {}).get("data"):
+                            out.append(base64.b64decode(pt["inlineData"]["data"]))
+            if out:
+                return out
+    raise ImageGenError(last)
+
+
+async def generate_images(prompt: str, example: tuple[str, bytes] | None, aspect: str, n: int) -> tuple[list[bytes], str]:
+    errors = []
+    for name, fn in (("proxy", _gen_proxy), ("gemini", _gen_gemini)):
+        try:
+            return await fn(prompt, example, aspect, n), name
+        except ImageGenError as exc:
+            errors.append(str(exc))
+        except httpx.HTTPError as exc:
+            errors.append(f"{name}: нет связи ({exc.__class__.__name__})")
+    raise ImageGenError("Генерация картинок сейчас недоступна. " + "; ".join(errors))
+
+
+IMAGE_PROMPT_SYSTEM = """Ты — арт-директор рекламы. Пишешь промт для модели генерации изображений
+(фон/фото для рекламного баннера). Отвечай ТОЛЬКО JSON: {"prompt": "...", "prompt_ru": "..."}.
+prompt — на английском, 60–120 слов: объект, окружение, свет, ракурс, стиль (фотореализм,
+если не сказано иное), цветовая гамма, композиция с СВОБОДНЫМ местом под текст (где именно).
+Обязательно: no text, no letters, no logos, no watermarks. Без реальных брендов и знаменитостей.
+prompt_ru — тот же промт кратко по-русски для человека. Если дан пример картинки — опиши её
+стиль, свет, композицию и палитру и сделай промт для НОВОГО изображения в этом стиле."""
 
 
 # ---------------------------------------------------------------- картинки по ссылке
@@ -592,6 +720,56 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
                 "strengths": [_txt(s, 200) for s in (raw.get("strengths") or [])[:6] if s],
                 "issues": issues[:12],
                 "better_texts": {k: _txt(bt.get(k), 110) for k in ("headline", "subheadline", "cta") if bt.get(k)}}
+
+    @router.post("/ai/image-prompt")
+    async def ai_image_prompt(p: AIImagePromptIn, principal: dict = Depends(principal_dep)):
+        """Claude пишет промт для генерации картинки по брифу и/или примеру (vision)."""
+        uid(principal)
+        if not (p.brief.strip() or p.wish.strip() or p.example):
+            raise HTTPException(status_code=422, detail="Опишите, что нужно, или приложите пример")
+        fw, fh = FORMATS.get(p.format, FORMATS["square"])
+        text = (f"Бриф: {p.brief.strip() or '—'}\nПожелания к картинке: {p.wish.strip() or '—'}\n"
+                f"Формат {fw}×{fh}, место под текст оставить.")
+        content: Any = text
+        if p.example:
+            mime, b64 = _data_url_parts(p.example)
+            content = [{"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                       {"type": "text", "text": "Пример картинки выше. " + text}]
+        try:
+            raw = parse_json(await ai_complete(IMAGE_PROMPT_SYSTEM, content, 1500))
+        except AIError as exc:
+            raise ai_fail(exc) from exc
+        raw = raw if isinstance(raw, dict) else {}
+        if not raw.get("prompt"):
+            raise HTTPException(status_code=502, detail="ИИ не написал промт — попробуйте ещё раз")
+        return {"prompt": _txt(raw.get("prompt"), 3000), "prompt_ru": _txt(raw.get("prompt_ru"), 1500)}
+
+    @router.post("/ai/image")
+    async def ai_image(p: AIImageIn, principal: dict = Depends(principal_dep)):
+        """Генерация изображения: по промту или по примеру (пример + промт)."""
+        uid(principal)
+        example = None
+        if p.example:
+            mime, b64 = _data_url_parts(p.example)
+            try:
+                example = (mime, base64.b64decode(b64))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="Пример картинки повреждён") from exc
+        aspect = _ASPECT.get(p.format, "1:1")
+        try:
+            raw_images, provider = await generate_images(p.prompt.strip(), example, aspect, p.count)
+        except ImageGenError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        images = []
+        for raw in raw_images[:p.count]:
+            try:
+                data_url, w, h = await asyncio.to_thread(_to_data_url, raw, 2000)
+                images.append({"data_url": data_url, "width": w, "height": h})
+            except Exception:  # noqa: BLE001 - битый ответ модели
+                continue
+        if not images:
+            raise HTTPException(status_code=502, detail="Модель вернула повреждённые картинки")
+        return {"images": images, "provider": provider}
 
     @router.post("/ai/rewrite")
     async def ai_rewrite(p: AIRewriteIn, principal: dict = Depends(principal_dep)):

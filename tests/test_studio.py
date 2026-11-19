@@ -98,6 +98,8 @@ def test_sanitize_layers():
     assert out[1]["shape"] == "rect" and out[1]["fill"]["color"] == "#112233" and out[1]["radius"] == 80
     assert out[2]["icon"] == "star"
     assert out[3]["bgColor"] == "#00aa00" and out[3]["weight"] == "700"
+    ml = studio.sanitize_layers([{"type": "text", "text": "−20%\\nНА   ПЕРВЫЙ визит\n\nвторая"}])[0]["text"]
+    assert ml == "−20%\nНА ПЕРВЫЙ визит\nвторая", repr(ml)
 
 
 def test_parse_json_variants():
@@ -139,3 +141,38 @@ def test_ai_design_sanitized(monkeypatch):
     ds = r.json()["designs"]
     assert len(ds) == 1 and ds[0]["format"] == "story" and ds[0]["bg"]["color"] == "#0033ff"
     assert ds[0]["layers"][0]["text"] == "Спишем долги"
+
+
+def _png_bytes(color="#00ff00"):
+    from PIL import Image
+    b = io.BytesIO(); Image.new("RGB", (600, 400), color).save(b, "PNG"); return b.getvalue()
+
+
+def test_image_fallback_and_errors(monkeypatch):
+    a = _user("studio-img@example.com")
+
+    async def proxy_fail(*args):
+        raise studio.ImageGenError("ИИ-прокси: модель картинок выключена на стороне сервиса")
+
+    async def gemini_ok(prompt, example, aspect, n):
+        assert aspect == "9:16" and example and example[0] == "image/png"
+        return [_png_bytes()] * n
+    monkeypatch.setattr(studio, "_gen_proxy", proxy_fail)
+    monkeypatch.setattr(studio, "_gen_gemini", gemini_ok)
+    ex = "data:image/png;base64," + base64.b64encode(_png_bytes("#ff0000")).decode()
+    r = client.post("/api/v1/studio/ai/image", json={"prompt": "юрист в офисе", "example": ex, "format": "story", "count": 2}, headers=a)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["provider"] == "gemini" and len(j["images"]) == 2 and j["images"][0]["data_url"].startswith("data:image/")
+
+    async def gemini_fail(*args):
+        raise studio.ImageGenError("Gemini: бесплатный тариф без квоты на картинки — нужно включить оплату")
+    monkeypatch.setattr(studio, "_gen_gemini", gemini_fail)
+    r = client.post("/api/v1/studio/ai/image", json={"prompt": "юрист в офисе"}, headers=a)
+    assert r.status_code == 503 and "выключена" in r.json()["detail"] and "оплату" in r.json()["detail"]
+
+
+def test_explain_messages():
+    assert "выключена" in studio._explain("X", 409, '{"code":"image_model_disabled","message":"This image model is currently disabled."}')
+    assert "оплату" in studio._explain("X", 429, "generate_content_free_tier_requests")
+    assert "лимит" in studio._explain("X", 429, "rate")
