@@ -4765,3 +4765,8 @@ from .sites_infra import build_router as _build_sites_router  # noqa: E402
 
 app.include_router(_build_sites_router(public_api_principal, require_user_principal, ADDAVTO_BASE_URL,
                                        ADDAVTO_ADMIN_USER, ADDAVTO_ADMIN_PASSWORD))
+
+# «Студия креативов» ЛК (2026-11-19): дизайны на сервере + ИИ (app/studio.py).
+from .studio import build_router as _build_studio_router  # noqa: E402
+
+app.include_router(_build_studio_router(public_api_principal, require_user_principal, DATA_DIR))
