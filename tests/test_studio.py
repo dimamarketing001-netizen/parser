@@ -152,7 +152,7 @@ def test_image_fallback_and_errors(monkeypatch):
     a = _user("studio-img@example.com")
 
     async def proxy_fail(*args):
-        raise studio.ImageGenError("ИИ-прокси: модель картинок выключена на стороне сервиса")
+        raise studio.ImageGenError("ИИ-прокси: gpt-image-2 — модель выключена на стороне сервиса")
 
     async def gemini_ok(prompt, example, aspect, n):
         assert aspect == "9:16" and example and example[0] == "image/png"

@@ -343,7 +343,7 @@ class ImageGenError(RuntimeError):
 def _explain(provider: str, status: int, text: str) -> str:
     t = text.lower()
     if "disabled" in t:
-        return f"{provider}: модель картинок выключена на стороне сервиса"
+        return f"{provider}: модель выключена на стороне сервиса"
     if status == 429 and "free_tier" in t:
         return f"{provider}: бесплатный тариф без квоты на картинки — нужно включить оплату"
     if status == 429:
@@ -366,7 +366,7 @@ async def _gen_proxy(prompt: str, example: tuple[str, bytes] | None, aspect: str
     models = [m.strip() for m in (os.getenv("STUDIO_IMAGE_MODELS") or os.getenv("STUDIO_IMAGE_MODEL")
                                    or "gemini-3-pro-image,gemini-3.1-flash-image,gpt-image-2").split(",") if m.strip()]
     base, headers = _ai_base(), {"Authorization": f"Bearer {key}"}
-    last = "ИИ-прокси: нет моделей"
+    errs: list[str] = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=15.0)) as http:
         for model in models:
             body: dict[str, Any] = {"model": model, "prompt": prompt, "n": n}
@@ -383,7 +383,7 @@ async def _gen_proxy(prompt: str, example: tuple[str, bytes] | None, aspect: str
             else:
                 r = await http.post(base + "/v1/images/generations", headers=headers, json=body)
             if r.status_code >= 400:
-                last = _explain("ИИ-прокси", r.status_code, r.text)
+                errs.append(model + " — " + _explain("", r.status_code, r.text).lstrip(": "))
                 continue
             j = r.json()
             jid = j.get("id")
@@ -399,9 +399,9 @@ async def _gen_proxy(prompt: str, example: tuple[str, bytes] | None, aspect: str
             err = j.get("error") or {}
             if j.get("status") in ("failed", "error") or (err and not j.get("data")):
                 code = err.get("code", "")
-                last = ("ИИ-прокси: сервис картинок временно недоступен — попробуйте позже" if code == "image_service_unreachable"
-                        else "ИИ-прокси: модель картинок не подключена у поставщика" if code == "model_not_found"
-                        else f"ИИ-прокси: {err.get('message') or code or 'генерация не удалась'}")
+                errs.append(model + " — " + ("сервис временно недоступен" if code == "image_service_unreachable"
+                                             else "не подключена у поставщика" if code == "model_not_found"
+                                             else (err.get("message") or code or "генерация не удалась")))
                 continue
             out = []
             for d in j.get("data") or []:
@@ -414,8 +414,8 @@ async def _gen_proxy(prompt: str, example: tuple[str, bytes] | None, aspect: str
                         out.append(rr.content)
             if out:
                 return out
-            last = "ИИ-прокси: картинка не готова за 3 минуты" if not j.get("ready") else "ИИ-прокси: пустой ответ"
-    raise ImageGenError(last)
+            errs.append(model + " — " + ("не готова за 3 минуты" if not j.get("ready") else "пустой ответ"))
+    raise ImageGenError("ИИ-прокси: " + ("; ".join(errs) or "нет моделей"))
 
 
 async def _gen_gemini(prompt: str, example: tuple[str, bytes] | None, aspect: str, n: int) -> list[bytes]:
