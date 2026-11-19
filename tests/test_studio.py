@@ -176,3 +176,42 @@ def test_explain_messages():
     assert "выключена" in studio._explain("X", 409, '{"code":"image_model_disabled","message":"This image model is currently disabled."}')
     assert "оплату" in studio._explain("X", 429, "generate_content_free_tier_requests")
     assert "лимит" in studio._explain("X", 429, "rate")
+
+
+def test_proxy_async_jobs(monkeypatch):
+    import asyncio
+    import httpx as hx
+    png = _png_bytes()
+    polls = {"n": 0}
+
+    def handler(req):
+        if req.method == "POST" and req.url.path == "/v1/images/generations":
+            body = __import__("json").loads(req.content)
+            if body["model"] == "m-down":
+                return hx.Response(202, json={"id": "j1", "status": "queued", "ready": False})
+            return hx.Response(202, json={"id": "j2", "status": "queued", "ready": False})
+        if req.url.path == "/v1/images/generations/j1":
+            return hx.Response(200, json={"id": "j1", "status": "failed", "error": {"code": "image_service_unreachable"}})
+        if req.url.path == "/v1/images/generations/j2":
+            polls["n"] += 1
+            if polls["n"] < 2:
+                return hx.Response(200, json={"id": "j2", "status": "running", "ready": False})
+            return hx.Response(200, json={"id": "j2", "status": "succeeded", "ready": True, "data": [{"url": "/v1/files/x.png"}]})
+        if req.url.path == "/v1/files/x.png":
+            return hx.Response(200, content=png, headers={"content-type": "image/png"})
+        return hx.Response(404)
+    real = hx.AsyncClient
+    monkeypatch.setattr(studio.httpx, "AsyncClient", lambda **kw: real(transport=hx.MockTransport(handler), **{k: v for k, v in kw.items() if k != "transport"}))
+    monkeypatch.setenv("STUDIO_AI_API_KEY", "k")
+    monkeypatch.setenv("STUDIO_AI_API_BASE", "http://proxy.test")
+    monkeypatch.setenv("STUDIO_IMAGE_MODELS", "m-down,m-ok")
+    orig_sleep = asyncio.sleep
+    monkeypatch.setattr(studio.asyncio, "sleep", lambda s: orig_sleep(0))
+    out = asyncio.run(studio._gen_proxy("red circle", None, "1:1", 1))
+    assert out == [png]
+    monkeypatch.setenv("STUDIO_IMAGE_MODELS", "m-down")
+    try:
+        asyncio.run(studio._gen_proxy("red circle", None, "1:1", 1))
+        raise AssertionError("должна быть ошибка")
+    except studio.ImageGenError as exc:
+        assert "временно недоступен" in str(exc)

@@ -329,7 +329,7 @@ CRITIQUE_SYSTEM = """Ты — опытный арт-директор и моде
 
 # ---------------------------------------------------------------- генерация изображений
 # Провайдеры по очереди: (1) тот же ИИ-прокси, OpenAI-совместимый /v1/images/* (модель
-# STUDIO_IMAGE_MODEL, по умолчанию gpt-image-2); (2) Gemini (GEMINI_API_KEY, модели
+# STUDIO_IMAGE_MODELS, по умолчанию gemini-3-pro-image,gemini-3.1-flash-image,gpt-image-2); (2) Gemini (GEMINI_API_KEY, модели
 # STUDIO_GEMINI_IMAGE_MODELS). Ошибки собираем и отдаём понятной фразой — на 19.11.2026
 # у прокси gpt-image-2 «disabled», у Gemini бесплатный тариф без квоты на картинки.
 _ASPECT = {"square": "1:1", "wide": "16:9", "landscape": "16:9", "r45": "4:5", "r43": "4:3", "r34": "3:4", "story": "9:16"}
@@ -356,32 +356,66 @@ def _explain(provider: str, status: int, text: str) -> str:
 
 
 async def _gen_proxy(prompt: str, example: tuple[str, bytes] | None, aspect: str, n: int) -> list[bytes]:
+    """ИИ-прокси, OpenAI-совместимый /v1/images/generations. Модели картинок у прокси
+    асинхронные: 202 + id → опрашиваем GET /v1/images/generations/{id} до ready/failed.
+    Проверено 19.11.2026: gemini-3-pro-image — «image_service_unreachable» (временно),
+    gemini-3.1-flash-image — «model_not_found» у поставщика, gpt-image-2 — «disabled»."""
     key = os.getenv("STUDIO_AI_API_KEY")
     if not key:
         raise ImageGenError("ИИ-прокси: ключ не задан")
-    model = os.getenv("STUDIO_IMAGE_MODEL") or "gpt-image-2"
+    models = [m.strip() for m in (os.getenv("STUDIO_IMAGE_MODELS") or os.getenv("STUDIO_IMAGE_MODEL")
+                                   or "gemini-3-pro-image,gemini-3.1-flash-image,gpt-image-2").split(",") if m.strip()]
     base, headers = _ai_base(), {"Authorization": f"Bearer {key}"}
+    last = "ИИ-прокси: нет моделей"
     async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=15.0)) as http:
-        if example:
-            r = await http.post(base + "/v1/images/edits", headers=headers,
-                                data={"model": model, "prompt": prompt, "n": str(n), "size": _OAI_SIZE.get(aspect, "1024x1024")},
-                                files={"image": ("example." + example[0].split("/")[-1], example[1], example[0])})
-        else:
-            r = await http.post(base + "/v1/images/generations", headers=headers,
-                                json={"model": model, "prompt": prompt, "n": n, "size": _OAI_SIZE.get(aspect, "1024x1024")})
-        if r.status_code >= 400:
-            raise ImageGenError(_explain("ИИ-прокси", r.status_code, r.text))
-        out = []
-        for d in r.json().get("data") or []:
-            if d.get("b64_json"):
-                out.append(base64.b64decode(d["b64_json"]))
-            elif d.get("url"):
-                rr = await http.get(d["url"])
-                if rr.status_code == 200:
-                    out.append(rr.content)
-    if not out:
-        raise ImageGenError("ИИ-прокси: пустой ответ")
-    return out
+        for model in models:
+            body: dict[str, Any] = {"model": model, "prompt": prompt, "n": n}
+            if model.startswith("gemini"):
+                body.update(aspect_ratio=aspect, quality="fullhd")
+                if example:
+                    body["image"] = f"data:{example[0]};base64," + base64.b64encode(example[1]).decode()
+            else:
+                body["size"] = _OAI_SIZE.get(aspect, "1024x1024")
+            if example and not model.startswith("gemini"):
+                r = await http.post(base + "/v1/images/edits", headers=headers,
+                                    data={k: str(v) for k, v in body.items()},
+                                    files={"image": ("example." + example[0].split("/")[-1], example[1], example[0])})
+            else:
+                r = await http.post(base + "/v1/images/generations", headers=headers, json=body)
+            if r.status_code >= 400:
+                last = _explain("ИИ-прокси", r.status_code, r.text)
+                continue
+            j = r.json()
+            jid = j.get("id")
+            t0 = asyncio.get_running_loop().time()
+            while r.status_code == 202 and jid and not j.get("ready") and j.get("status") not in ("failed", "error", "cancelled", "succeeded", "completed"):
+                if asyncio.get_running_loop().time() - t0 > 200:
+                    break
+                await asyncio.sleep(3)
+                rr = await http.get(base + "/v1/images/generations/" + jid, headers=headers)
+                if rr.status_code >= 400:
+                    break
+                j = rr.json()
+            err = j.get("error") or {}
+            if j.get("status") in ("failed", "error") or (err and not j.get("data")):
+                code = err.get("code", "")
+                last = ("ИИ-прокси: сервис картинок временно недоступен — попробуйте позже" if code == "image_service_unreachable"
+                        else "ИИ-прокси: модель картинок не подключена у поставщика" if code == "model_not_found"
+                        else f"ИИ-прокси: {err.get('message') or code or 'генерация не удалась'}")
+                continue
+            out = []
+            for d in j.get("data") or []:
+                if d.get("b64_json"):
+                    out.append(base64.b64decode(d["b64_json"]))
+                elif d.get("url"):
+                    u = d["url"] if d["url"].startswith("http") else base + d["url"]
+                    rr = await http.get(u, headers=headers if u.startswith(base) else None)
+                    if rr.status_code == 200:
+                        out.append(rr.content)
+            if out:
+                return out
+            last = "ИИ-прокси: картинка не готова за 3 минуты" if not j.get("ready") else "ИИ-прокси: пустой ответ"
+    raise ImageGenError(last)
 
 
 async def _gen_gemini(prompt: str, example: tuple[str, bytes] | None, aspect: str, n: int) -> list[bytes]:
