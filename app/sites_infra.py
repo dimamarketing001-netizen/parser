@@ -5,6 +5,9 @@
 агент ~/regru_monitor/sites_agent.py на проде (ssh, как ispmgr_mail_api):
 список + A-записи, A → наш сервер, vhost nginx → addAvto, SSL certbot.
 Статус сайта пишем в addAvto (PUT /api/sites), сами страницы отдаёт addAvto.
+
+2026-11-19: аккаунтов reg.ru несколько (на проде REGRU_USERNAME_2 … в .env
+агента) — у домена account/account_login, список аккаунтов — /regru-accounts.
 """
 from __future__ import annotations
 
@@ -49,6 +52,7 @@ async def agent(*args: str, timeout: float = 300) -> dict[str, Any]:
 class DeployIn(BaseModel):
     domain: str = Field(min_length=3, max_length=255)
     force: bool = False
+    account: int | None = Field(default=None, ge=1, le=9)
     template_id: int | None = None
     project_id: int | None = None
 
@@ -81,14 +85,15 @@ def build_router(principal_dep: Callable, require_user: Callable, addavto_base: 
         if state:
             j["state"] = state
 
-    async def deploy(d: str, force: bool, template_id: int | None, project_id: int | None) -> None:
+    async def deploy(d: str, force: bool, template_id: int | None, project_id: int | None,
+                     account: int | None = None) -> None:
         job_note(d, "Направляю A-записи на сервер (reg.ru)…")
-        r = await agent("point", d, *(["--force"] if force else []))
+        r = await agent("point", d, *(["--force"] if force else []), *(["--account", str(account)] if account else []))
         if not r.get("ok"):
             job_note(d, "Ошибка: " + str(r.get("error")), "error")
             await set_status(d, "error", str(r.get("error")), template_id=template_id, project_id=project_id)
             return
-        job_note(d, "DNS: " + "; ".join(r.get("done") or ["уже настроено"]))
+        job_note(d, f"DNS ({r.get('account_login') or 'reg.ru'}): " + "; ".join(r.get("done") or ["уже настроено"]))
         await set_status(d, "dns", "A-записи на сервер; ждём DNS и SSL", template_id=template_id, project_id=project_id)
         r = await agent("nginx", d)
         if not r.get("ok"):
@@ -131,7 +136,17 @@ def build_router(principal_dep: Callable, require_user: Callable, addavto_base: 
             s = ours.get(it["domain"])
             job = {k: v for k, v in (_jobs.get(it["domain"]) or {}).items() if not k.startswith("_")}
             items.append({**it, "site": s, "job": job or None})
-        return {"ip": data.get("ip"), "items": items, "cached_at": _list_cache["at"]}
+        return {"ip": data.get("ip"), "items": items, "accounts": data.get("accounts") or [],
+                "cached_at": _list_cache["at"]}
+
+    @router.get("/api/v1/sites/regru-accounts")
+    async def regru_accounts(principal: dict = Depends(principal_dep)):
+        """Аккаунты reg.ru: логин, доступ к API с сервера, число доменов (живой запрос)."""
+        require_user(principal)
+        r = await agent("accounts", timeout=120)
+        if not r.get("ok"):
+            raise HTTPException(status_code=502, detail="Аккаунты reg.ru: " + str(r.get("error")))
+        return {"ip": r.get("ip"), "accounts": r.get("accounts") or []}
 
     @router.post("/api/v1/sites/deploy")
     async def deploy_start(payload: DeployIn, principal: dict = Depends(principal_dep)):
@@ -149,7 +164,7 @@ def build_router(principal_dep: Callable, require_user: Callable, addavto_base: 
             return j
         _jobs[d] = {"domain": d, "log": [], "state": "running", "started": time.time()}
         await set_status(d, "dns", "Размещение начато", template_id=payload.template_id, project_id=payload.project_id)
-        task = asyncio.create_task(deploy(d, payload.force, payload.template_id, payload.project_id))
+        task = asyncio.create_task(deploy(d, payload.force, payload.template_id, payload.project_id, payload.account))
         _jobs[d]["_task"] = task
         _list_cache["at"] = 0
         return {k: v for k, v in _jobs[d].items() if not k.startswith("_")}
