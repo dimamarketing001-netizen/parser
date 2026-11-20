@@ -95,12 +95,21 @@ def init_db(path: Path) -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_studio_versions ON studio_versions(design_id, created_at);
         """)
+        cols = {r[1] for r in c.execute("PRAGMA table_info(studio_designs)")}
+        if "is_template" not in cols:
+            c.execute("ALTER TABLE studio_designs ADD COLUMN is_template INTEGER NOT NULL DEFAULT 0")
+        if "category" not in cols:
+            c.execute("ALTER TABLE studio_designs ADD COLUMN category TEXT NOT NULL DEFAULT ''")
         c.commit()
 
 
 def _meta(r: sqlite3.Row) -> dict[str, Any]:
-    return {"id": r["id"], "name": r["name"], "format": r["format"], "thumb": r["thumb"],
-            "created_at": r["created_at"], "updated_at": r["updated_at"]}
+    keys = r.keys()
+    out = {"id": r["id"], "name": r["name"], "format": r["format"], "thumb": r["thumb"],
+           "created_at": r["created_at"], "updated_at": r["updated_at"]}
+    if "category" in keys:
+        out["category"] = r["category"]
+    return out
 
 
 class DesignIn(BaseModel):
@@ -114,6 +123,11 @@ class DesignIn(BaseModel):
 class UploadIn(BaseModel):
     data_url: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
     name: str = Field(default="", max_length=200)
+
+
+class AsTemplateIn(BaseModel):
+    name: str = Field(default="", max_length=200)
+    category: str = Field(default="", max_length=60)
 
 
 class RenameIn(BaseModel):
@@ -561,10 +575,10 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
             if q.strip():
-                rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at FROM studio_designs WHERE user_id=? "
+                rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at FROM studio_designs WHERE user_id=? AND is_template=0 "
                                  "AND name LIKE ? ORDER BY updated_at DESC", (user_id, f"%{q.strip()}%")).fetchall()
             else:
-                rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at FROM studio_designs WHERE user_id=? "
+                rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at FROM studio_designs WHERE user_id=? AND is_template=0 "
                                  "ORDER BY updated_at DESC", (user_id,)).fetchall()
         return {"designs": [_meta(r) for r in rows]}
 
@@ -630,6 +644,26 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             c.commit()
             n = own(c, cur.lastrowid, user_id)
         return _meta(n)
+
+    @router.post("/designs/{design_id}/as-template")
+    def as_template(design_id: int, p: AsTemplateIn, principal: dict = Depends(principal_dep)):
+        """Копия дизайна в «Мои шаблоны» (сам дизайн не меняется)."""
+        user_id, now = uid(principal), time.time()
+        with closing(_connect(db_path)) as c:
+            r = own(c, design_id, user_id)
+            cur = c.execute("INSERT INTO studio_designs(user_id,name,format,data,thumb,created_at,updated_at,is_template,category) "
+                            "VALUES(?,?,?,?,?,?,?,1,?)", (user_id, (p.name.strip() or r["name"])[:200], r["format"], r["data"],
+                                                         r["thumb"], now, now, p.category.strip()[:60] or "Мои"))
+            c.commit()
+            return _meta(own(c, cur.lastrowid, user_id))
+
+    @router.get("/templates")
+    def list_templates(principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at,category FROM studio_designs "
+                             "WHERE user_id=? AND is_template=1 ORDER BY updated_at DESC", (user_id,)).fetchall()
+        return {"templates": [_meta(r) for r in rows]}
 
     @router.get("/designs/{design_id}/versions")
     def list_versions(design_id: int, principal: dict = Depends(principal_dep)):

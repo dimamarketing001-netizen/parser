@@ -234,3 +234,13 @@ def test_uploads_versions(monkeypatch):
     r = client.post(f"/api/v1/studio/designs/{did}/versions/{vs[-1]['id']}/restore", headers=a).json()
     assert r["data"]["layers"][0]["text"] == "Привет"
     assert client.get(f"/api/v1/studio/designs/{did}/versions", headers=b).status_code == 404
+
+
+def test_user_templates():
+    a = _user("studio-tpl@example.com")
+    did = client.post("/api/v1/studio/designs", json=_design("Акция"), headers=a).json()["id"]
+    t = client.post(f"/api/v1/studio/designs/{did}/as-template", json={"category": "Акции"}, headers=a).json()
+    assert t["id"] != did and t["category"] == "Акции" and t["name"] == "Акция"
+    assert [x["id"] for x in client.get("/api/v1/studio/templates", headers=a).json()["templates"]] == [t["id"]]
+    assert t["id"] not in [x["id"] for x in client.get("/api/v1/studio/designs", headers=a).json()["designs"]]
+    assert client.get(f"/api/v1/studio/designs/{t['id']}", headers=a).json()["data"]["layers"][0]["text"] == "Привет"
