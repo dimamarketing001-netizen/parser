@@ -38,6 +38,7 @@ ICONS = ["star", "heart", "zap", "flame", "gift", "tag", "badge-percent", "thumb
 FONTS = ["Onest", "Manrope", "Inter", "Montserrat", "Roboto", "Rubik", "Oswald", "PT Serif", "Play"]
 ROLES = ("headline", "subheadline", "cta", "badge", "disclaimer")
 MAX_DESIGN_BYTES = 30_000_000
+VERSION_EVERY = float(os.getenv("STUDIO_VERSION_EVERY", "600"))
 MAX_IMAGE_BYTES = 12_000_000
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -75,6 +76,24 @@ def init_db(path: Path) -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_studio_user ON studio_designs(user_id, updated_at);
         CREATE UNIQUE INDEX IF NOT EXISTS ux_studio_local ON studio_designs(user_id, local_id) WHERE local_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS studio_uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            data TEXT NOT NULL,
+            thumb TEXT NOT NULL DEFAULT '',
+            width INTEGER, height INTEGER,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_studio_uploads_user ON studio_uploads(user_id, created_at);
+        CREATE TABLE IF NOT EXISTS studio_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            design_id INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            thumb TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_studio_versions ON studio_versions(design_id, created_at);
         """)
         c.commit()
 
@@ -90,6 +109,11 @@ class DesignIn(BaseModel):
     data: dict[str, Any]
     thumb: str = Field(default="", max_length=600_000)
     local_id: str | None = Field(default=None, max_length=60)
+
+
+class UploadIn(BaseModel):
+    data_url: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
+    name: str = Field(default="", max_length=200)
 
 
 class RenameIn(BaseModel):
@@ -570,7 +594,14 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def update_design(design_id: int, p: DesignIn, principal: dict = Depends(principal_dep)):
         user_id, data = uid(principal), check_size(p)
         with closing(_connect(db_path)) as c:
-            own(c, design_id, user_id)
+            cur = own(c, design_id, user_id)
+            # История версий: снимок прежнего состояния не чаще раза в 10 минут, храним 30 последних.
+            last = c.execute("SELECT MAX(created_at) FROM studio_versions WHERE design_id=?", (design_id,)).fetchone()[0]
+            if cur["data"] != data and (not last or time.time() - last >= VERSION_EVERY):
+                c.execute("INSERT INTO studio_versions(design_id,data,thumb,created_at) VALUES(?,?,?,?)",
+                          (design_id, cur["data"], cur["thumb"], cur["updated_at"]))
+                c.execute("DELETE FROM studio_versions WHERE design_id=? AND id NOT IN (SELECT id FROM studio_versions "
+                          "WHERE design_id=? ORDER BY created_at DESC LIMIT 30)", (design_id, design_id))
             c.execute("UPDATE studio_designs SET name=?,format=?,data=?,thumb=CASE WHEN ?<>'' THEN ? ELSE thumb END,"
                       "updated_at=? WHERE id=?", (p.name.strip()[:200] or "Новый дизайн", fmt(p.format), data,
                                                   p.thumb, p.thumb, time.time(), design_id))
@@ -600,12 +631,104 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             n = own(c, cur.lastrowid, user_id)
         return _meta(n)
 
+    @router.get("/designs/{design_id}/versions")
+    def list_versions(design_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            own(c, design_id, user_id)
+            rows = c.execute("SELECT id,thumb,created_at FROM studio_versions WHERE design_id=? ORDER BY created_at DESC",
+                             (design_id,)).fetchall()
+        return {"versions": [dict(r) for r in rows]}
+
+    @router.post("/designs/{design_id}/versions/{version_id}/restore")
+    def restore_version(design_id: int, version_id: int, principal: dict = Depends(principal_dep)):
+        user_id, now = uid(principal), time.time()
+        with closing(_connect(db_path)) as c:
+            cur = own(c, design_id, user_id)
+            v = c.execute("SELECT * FROM studio_versions WHERE id=? AND design_id=?", (version_id, design_id)).fetchone()
+            if not v:
+                raise HTTPException(status_code=404, detail="Версия не найдена")
+            c.execute("INSERT INTO studio_versions(design_id,data,thumb,created_at) VALUES(?,?,?,?)",
+                      (design_id, cur["data"], cur["thumb"], cur["updated_at"]))
+            c.execute("UPDATE studio_designs SET data=?, thumb=?, updated_at=? WHERE id=?", (v["data"], v["thumb"], now, design_id))
+            c.commit()
+            r = own(c, design_id, user_id)
+        return {**_meta(r), "data": json.loads(r["data"])}
+
+    @router.get("/uploads")
+    def list_uploads(principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            rows = c.execute("SELECT id,name,thumb,width,height,created_at FROM studio_uploads WHERE user_id=? "
+                             "ORDER BY created_at DESC LIMIT 300", (user_id,)).fetchall()
+        return {"uploads": [dict(r) for r in rows]}
+
+    @router.get("/uploads/{upload_id}")
+    def get_upload(upload_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            r = c.execute("SELECT * FROM studio_uploads WHERE id=? AND user_id=?", (upload_id, user_id)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        return {"id": r["id"], "name": r["name"], "data_url": r["data"], "width": r["width"], "height": r["height"]}
+
+    @router.post("/uploads")
+    async def add_upload(p: UploadIn, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        _mime, b64 = _data_url_parts(p.data_url)
+        try:
+            raw = base64.b64decode(b64)
+            data_url, w, h = await asyncio.to_thread(_to_data_url, raw, 2000)
+            thumb, _, _ = await asyncio.to_thread(_to_data_url, raw, 240)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail="Файл не похож на картинку") from exc
+        with closing(_connect(db_path)) as c:
+            cur = c.execute("INSERT INTO studio_uploads(user_id,name,data,thumb,width,height,created_at) VALUES(?,?,?,?,?,?,?)",
+                            (user_id, p.name.strip()[:200], data_url, thumb, w, h, time.time()))
+            c.commit()
+        return {"id": cur.lastrowid, "name": p.name.strip()[:200], "thumb": thumb, "width": w, "height": h, "data_url": data_url}
+
+    @router.delete("/uploads/{upload_id}")
+    def delete_upload(upload_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            n = c.execute("DELETE FROM studio_uploads WHERE id=? AND user_id=?", (upload_id, user_id)).rowcount
+            c.commit()
+        if not n:
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        return {"ok": True}
+
+    @router.get("/stock")
+    async def stock(q: str, page: int = 1, principal: dict = Depends(principal_dep)):
+        """Бесплатные фото (Openverse, лицензии, допускающие коммерческое использование)."""
+        uid(principal)
+        if len(q.strip()) < 2:
+            return {"results": [], "total": 0}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=10.0), headers={"User-Agent": "ParsYaStudio/1.0"}) as http:
+                r = await http.get("https://api.openverse.org/v1/images/", params={
+                    "q": q.strip()[:120], "page": max(1, min(page, 20)), "page_size": 20,
+                    "license_type": "commercial,modification", "mature": "false"})
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Сток фото не отвечает") from exc
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Сток фото: ошибка {r.status_code}")
+        j = r.json()
+        out = [{"id": x.get("id"), "thumb": x.get("thumbnail") or x.get("url"), "url": x.get("url"),
+                "title": _txt(x.get("title"), 120), "creator": _txt(x.get("creator"), 80),
+                "license": (x.get("license") or "").upper() + (" " + x["license_version"] if x.get("license_version") else ""),
+                "license_url": x.get("license_url"), "landing": x.get("foreign_landing_url"),
+                "attribution_needed": (x.get("license") or "") not in ("cc0", "pdm")}
+               for x in j.get("results") or [] if x.get("url")]
+        return {"results": out, "total": j.get("result_count", len(out))}
+
     @router.delete("/designs/{design_id}")
     def delete_design(design_id: int, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
             own(c, design_id, user_id)
             c.execute("DELETE FROM studio_designs WHERE id=?", (design_id,))
+            c.execute("DELETE FROM studio_versions WHERE design_id=?", (design_id,))
             c.commit()
         return {"ok": True}
 

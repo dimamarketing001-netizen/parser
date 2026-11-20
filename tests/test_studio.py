@@ -215,3 +215,22 @@ def test_proxy_async_jobs(monkeypatch):
         raise AssertionError("должна быть ошибка")
     except studio.ImageGenError as exc:
         assert "временно недоступен" in str(exc)
+
+
+def test_uploads_versions(monkeypatch):
+    a, b = _user("studio-up@example.com"), _user("studio-up2@example.com")
+    du = "data:image/png;base64," + base64.b64encode(_png_bytes("#123456")).decode()
+    up = client.post("/api/v1/studio/uploads", json={"data_url": du, "name": "logo.png"}, headers=a).json()
+    assert up["id"] and up["thumb"].startswith("data:image/") and up["width"] == 600
+    assert [u["id"] for u in client.get("/api/v1/studio/uploads", headers=a).json()["uploads"]] == [up["id"]]
+    assert client.get(f"/api/v1/studio/uploads/{up['id']}", headers=b).status_code == 404
+    assert client.delete(f"/api/v1/studio/uploads/{up['id']}", headers=a).json()["ok"]
+    monkeypatch.setattr(studio, "VERSION_EVERY", 0)
+    did = client.post("/api/v1/studio/designs", json=_design("Версии"), headers=a).json()["id"]
+    client.put(f"/api/v1/studio/designs/{did}", json=_design("Версии", [{"id": "L1", "type": "text", "text": "Второй"}]), headers=a)
+    client.put(f"/api/v1/studio/designs/{did}", json=_design("Версии", [{"id": "L1", "type": "text", "text": "Третий"}]), headers=a)
+    vs = client.get(f"/api/v1/studio/designs/{did}/versions", headers=a).json()["versions"]
+    assert len(vs) == 2
+    r = client.post(f"/api/v1/studio/designs/{did}/versions/{vs[-1]['id']}/restore", headers=a).json()
+    assert r["data"]["layers"][0]["text"] == "Привет"
+    assert client.get(f"/api/v1/studio/designs/{did}/versions", headers=b).status_code == 404
