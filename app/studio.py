@@ -95,6 +95,9 @@ def init_db(path: Path) -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_studio_versions ON studio_versions(design_id, created_at);
         """)
+        c.execute("""CREATE TABLE IF NOT EXISTS studio_fonts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, family TEXT NOT NULL,
+            filename TEXT NOT NULL DEFAULT '', fmt TEXT NOT NULL, data BLOB NOT NULL, created_at REAL NOT NULL)""")
         cols = {r[1] for r in c.execute("PRAGMA table_info(studio_designs)")}
         if "is_template" not in cols:
             c.execute("ALTER TABLE studio_designs ADD COLUMN is_template INTEGER NOT NULL DEFAULT 0")
@@ -128,6 +131,16 @@ class UploadIn(BaseModel):
 class AsTemplateIn(BaseModel):
     name: str = Field(default="", max_length=200)
     category: str = Field(default="", max_length=60)
+
+
+class FontIn(BaseModel):
+    family: str = Field(min_length=1, max_length=60)
+    filename: str = Field(default="", max_length=200)
+    data_base64: str = Field(min_length=100, max_length=12_000_000)
+
+
+class RemoveBgIn(BaseModel):
+    image: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
 
 
 class RenameIn(BaseModel):
@@ -507,6 +520,45 @@ prompt_ru — тот же промт кратко по-русски для че�
 стиль, свет, композицию и палитру и сделай промт для НОВОГО изображения в этом стиле."""
 
 
+# ---------------------------------------------------------------- удаление фона, шрифты
+_REMBG_PY = Path(os.getenv("STUDIO_REMBG_PYTHON", str(Path.home() / "ParsYa/.venv-rembg/bin/python")))
+_REMBG_WORKER = Path(__file__).resolve().parent.parent / "tools" / "rembg_worker.py"
+_rembg_lock = asyncio.Semaphore(1)
+
+
+async def remove_background(raw: bytes) -> bytes:
+    """Фон вырезает rembg (модель isnet-general-use) в отдельном окружении — по одной задаче за раз."""
+    if not _REMBG_PY.exists():
+        raise HTTPException(status_code=503, detail="Удаление фона не установлено на сервере")
+    async with _rembg_lock:
+        proc = await asyncio.create_subprocess_exec(str(_REMBG_PY), str(_REMBG_WORKER), os.getenv("STUDIO_REMBG_MODEL", "isnet-general-use"),
+                                                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(raw), 180)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=504, detail="Удаление фона заняло слишком долго — попробуйте фото поменьше")
+    if proc.returncode != 0 or not out.startswith(b"\x89PNG"):
+        raise HTTPException(status_code=502, detail="Не удалось удалить фон: " + err.decode(errors="replace")[-200:])
+    return out
+
+
+def font_format(data: bytes) -> str | None:
+    head = data[:4]
+    if head in (b"\x00\x01\x00\x00", b"true"):
+        return "truetype"
+    if head == b"OTTO":
+        return "opentype"
+    if head == b"wOFF":
+        return "woff"
+    if head == b"wOF2":
+        return "woff2"
+    return None
+
+
+_FONT_MIME = {"truetype": "font/ttf", "opentype": "font/otf", "woff": "font/woff", "woff2": "font/woff2"}
+
+
 # ---------------------------------------------------------------- картинки по ссылке
 def _public_host(host: str) -> bool:
     try:
@@ -816,6 +868,71 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         except Exception as exc:  # noqa: BLE001 - Pillow: не картинка/битый файл
             raise HTTPException(status_code=422, detail="По ссылке не картинка или файл повреждён") from exc
         return {"data_url": data_url, "width": w, "height": h}
+
+    @router.post("/remove-bg")
+    async def remove_bg(p: RemoveBgIn, principal: dict = Depends(principal_dep)):
+        uid(principal)
+        _mime, b64 = _data_url_parts(p.image)
+        try:
+            raw = base64.b64decode(b64)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Картинка повреждена") from exc
+        png = await remove_background(raw)
+        from PIL import Image
+        with Image.open(io.BytesIO(png)) as im:
+            w, h = im.size
+        return {"data_url": "data:image/png;base64," + base64.b64encode(png).decode(), "width": w, "height": h}
+
+    @router.get("/fonts")
+    def list_fonts(principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            rows = c.execute("SELECT id,family,filename,fmt,created_at FROM studio_fonts WHERE user_id=? ORDER BY family",
+                             (user_id,)).fetchall()
+        return {"fonts": [dict(r) for r in rows]}
+
+    @router.get("/fonts/{font_id}/file")
+    def font_file(font_id: int, principal: dict = Depends(principal_dep)):
+        from fastapi.responses import Response
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            r = c.execute("SELECT fmt,data FROM studio_fonts WHERE id=? AND user_id=?", (font_id, user_id)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Шрифт не найден")
+        return Response(content=bytes(r["data"]), media_type=_FONT_MIME.get(r["fmt"], "application/octet-stream"),
+                        headers={"Cache-Control": "private, max-age=86400"})
+
+    @router.post("/fonts")
+    def add_font(p: FontIn, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        try:
+            data = base64.b64decode(p.data_base64.split(",", 1)[-1])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Файл повреждён") from exc
+        if len(data) > 8_000_000:
+            raise HTTPException(status_code=413, detail="Шрифт больше 8 МБ")
+        fmt = font_format(data)
+        if not fmt:
+            raise HTTPException(status_code=422, detail="Это не шрифт: нужен TTF, OTF, WOFF или WOFF2")
+        family = re.sub(r"[^\w \-]+", "", p.family, flags=re.U).strip()[:60] or "Мой шрифт"
+        with closing(_connect(db_path)) as c:
+            # lower() в SQLite не понимает кириллицу — сравниваем в Python
+            if any(r[0].casefold() == family.casefold() for r in c.execute("SELECT family FROM studio_fonts WHERE user_id=?", (user_id,))):
+                raise HTTPException(status_code=409, detail=f"Шрифт «{family}» уже загружен")
+            cur = c.execute("INSERT INTO studio_fonts(user_id,family,filename,fmt,data,created_at) VALUES(?,?,?,?,?,?)",
+                            (user_id, family, p.filename[:200], fmt, data, time.time()))
+            c.commit()
+        return {"id": cur.lastrowid, "family": family, "fmt": fmt}
+
+    @router.delete("/fonts/{font_id}")
+    def delete_font(font_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            n = c.execute("DELETE FROM studio_fonts WHERE id=? AND user_id=?", (font_id, user_id)).rowcount
+            c.commit()
+        if not n:
+            raise HTTPException(status_code=404, detail="Шрифт не найден")
+        return {"ok": True}
 
     @router.get("/ai/status")
     def ai_status(principal: dict = Depends(principal_dep)):

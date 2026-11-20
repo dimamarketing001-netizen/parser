@@ -244,3 +244,29 @@ def test_user_templates():
     assert [x["id"] for x in client.get("/api/v1/studio/templates", headers=a).json()["templates"]] == [t["id"]]
     assert t["id"] not in [x["id"] for x in client.get("/api/v1/studio/designs", headers=a).json()["designs"]]
     assert client.get(f"/api/v1/studio/designs/{t['id']}", headers=a).json()["data"]["layers"][0]["text"] == "Привет"
+
+
+def test_fonts_upload_and_format_check():
+    a, b = _user("studio-font@example.com"), _user("studio-font2@example.com")
+    bad = client.post("/api/v1/studio/fonts", json={"family": "X", "data_base64": base64.b64encode(b"not a font" * 20).decode()}, headers=a)
+    assert bad.status_code == 422
+    ttf = b"\x00\x01\x00\x00" + b"\x00" * 300
+    r = client.post("/api/v1/studio/fonts", json={"family": "Мой Бренд!", "filename": "brand.ttf", "data_base64": base64.b64encode(ttf).decode()}, headers=a).json()
+    assert r["family"] == "Мой Бренд" and r["fmt"] == "truetype"
+    assert client.post("/api/v1/studio/fonts", json={"family": "мой бренд", "data_base64": base64.b64encode(ttf).decode()}, headers=a).status_code == 409
+    f = client.get(f"/api/v1/studio/fonts/{r['id']}/file", headers=a)
+    assert f.status_code == 200 and f.content == ttf and f.headers["content-type"] == "font/ttf"
+    assert client.get(f"/api/v1/studio/fonts/{r['id']}/file", headers=b).status_code == 404
+    assert [x["family"] for x in client.get("/api/v1/studio/fonts", headers=a).json()["fonts"]] == ["Мой Бренд"]
+    assert client.delete(f"/api/v1/studio/fonts/{r['id']}", headers=a).json()["ok"]
+
+
+def test_remove_bg_endpoint(monkeypatch):
+    a = _user("studio-rembg@example.com")
+
+    async def fake(raw):
+        return _png_bytes("#00ff00")
+    monkeypatch.setattr(studio, "remove_background", fake)
+    du = "data:image/jpeg;base64," + base64.b64encode(_png_bytes()).decode()
+    r = client.post("/api/v1/studio/remove-bg", json={"image": du}, headers=a).json()
+    assert r["data_url"].startswith("data:image/png;base64,") and r["width"] == 600
