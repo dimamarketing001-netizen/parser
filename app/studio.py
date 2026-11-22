@@ -167,6 +167,11 @@ class AICopyIn(BaseModel):
     current: dict[str, str] = Field(default_factory=dict)
 
 
+class AITranslateIn(BaseModel):
+    texts: list[str] = Field(default_factory=list, max_length=300)
+    lang: str = Field(min_length=2, max_length=40)
+
+
 class AIDesignIn(BaseModel):
     brief: str = Field(min_length=3, max_length=3000)
     format: str = Field(default="square", max_length=20)
@@ -1082,6 +1087,28 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         if not images:
             raise HTTPException(status_code=502, detail="Модель вернула повреждённые картинки")
         return {"images": images, "provider": provider}
+
+    @router.post("/ai/translate")
+    async def ai_translate(p: AITranslateIn, principal: dict = Depends(principal_dep)):
+        """Тексты макета → другой язык (порядок сохраняется; числа, цены, ссылки — как есть)."""
+        uid(principal)
+        texts = [str(t)[:800] for t in p.texts]
+        if not any(t.strip() for t in texts):
+            raise HTTPException(status_code=422, detail="Нет текста для перевода")
+        user = (f"Переведи тексты рекламного макета на язык: {p.lang.strip()}.\n"
+                "Сохрани смысл и тон рекламы; длина — как у оригинала или короче (текст стоит в рамке на картинке). "
+                "Числа, цены, валюту, телефоны, ссылки, адреса сайтов и названия брендов не меняй. "
+                "Переносы строк (\\n) сохраняй. Пустую строку оставь пустой.\n"
+                'Ответ строго JSON: {"t": ["перевод 1", "перевод 2", ...]} — столько же элементов и в том же порядке.\n\n'
+                "Тексты:\n" + json.dumps(texts, ensure_ascii=False))
+        try:
+            raw = parse_json(await ai_complete("Ты — переводчик-локализатор рекламы. Отвечай только JSON.", user, 6000))
+        except AIError as exc:
+            raise ai_fail(exc) from exc
+        out = raw.get("t") if isinstance(raw, dict) else raw
+        if not isinstance(out, list) or len(out) != len(texts):
+            raise HTTPException(status_code=502, detail="ИИ вернул перевод не полностью — попробуйте ещё раз")
+        return {"texts": [str(x if x is not None else "")[:1200] for x in out]}
 
     @router.post("/ai/rewrite")
     async def ai_rewrite(p: AIRewriteIn, principal: dict = Depends(principal_dep)):
