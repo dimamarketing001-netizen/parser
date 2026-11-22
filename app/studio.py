@@ -32,7 +32,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 FORMATS = {"square": (1080, 1080), "landscape": (1200, 628), "story": (1080, 1920), "wide": (1080, 607),
-           "r43": (1080, 810), "r34": (810, 1080), "r45": (1080, 1350)}
+           "r43": (1080, 810), "r34": (810, 1080), "r45": (1080, 1350),
+           # форматы площадок (ЛК: STUDIO_PLATFORMS) — обложки, превью, карточки маркетплейсов, печать
+           "vk_cover": (1920, 768), "hd": (1280, 720), "yt_banner": (2560, 1440), "mp_card": (900, 1200),
+           "og": (1200, 630), "slides": (1920, 1080), "a4": (1240, 1754), "bcard": (1063, 591)}
 ICONS = ["star", "heart", "zap", "flame", "gift", "tag", "badge-percent", "thumbs-up", "sparkles", "trophy",
          "shield-check", "truck", "clock", "phone", "map-pin", "award", "check-circle-2", "rocket"]
 FONTS = ["Onest", "Manrope", "Inter", "Montserrat", "Roboto", "Rubik", "Oswald", "PT Serif", "Play"]
@@ -383,7 +386,8 @@ CRITIQUE_SYSTEM = """Ты — опытный арт-директор и моде
 # STUDIO_IMAGE_MODELS, по умолчанию gemini-3-pro-image,gemini-3.1-flash-image,gpt-image-2); (2) Gemini (GEMINI_API_KEY, модели
 # STUDIO_GEMINI_IMAGE_MODELS). Ошибки собираем и отдаём понятной фразой — на 19.11.2026
 # у прокси gpt-image-2 «disabled», у Gemini бесплатный тариф без квоты на картинки.
-_ASPECT = {"square": "1:1", "wide": "16:9", "landscape": "16:9", "r45": "4:5", "r43": "4:3", "r34": "3:4", "story": "9:16"}
+_ASPECT = {"square": "1:1", "wide": "16:9", "landscape": "16:9", "r45": "4:5", "r43": "4:3", "r34": "3:4", "story": "9:16",
+           "vk_cover": "21:9", "hd": "16:9", "yt_banner": "16:9", "mp_card": "3:4", "og": "16:9", "slides": "16:9", "a4": "3:4", "bcard": "16:9"}
 _OAI_SIZE = {"1:1": "1024x1024", "16:9": "1536x1024", "4:3": "1536x1024", "4:5": "1024x1536", "3:4": "1024x1536", "9:16": "1024x1536"}
 
 
