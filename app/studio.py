@@ -32,6 +32,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from .teams import RANK as TEAM_RANK, init_db as teams_init_db, member_role
+
 FORMATS = {"square": (1080, 1080), "landscape": (1200, 628), "story": (1080, 1920), "wide": (1080, 607),
            "r43": (1080, 810), "r34": (810, 1080), "r45": (1080, 1350),
            # форматы площадок (ЛК: STUDIO_PLATFORMS) — обложки, превью, карточки маркетплейсов, печать
@@ -113,6 +115,11 @@ def init_db(path: Path) -> None:
             c.execute("ALTER TABLE studio_designs ADD COLUMN is_template INTEGER NOT NULL DEFAULT 0")
         if "category" not in cols:
             c.execute("ALTER TABLE studio_designs ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+        if "team_id" not in cols:  # общие дизайны команды (NULL — личный)
+            c.execute("ALTER TABLE studio_designs ADD COLUMN team_id INTEGER")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_studio_team ON studio_designs(team_id, updated_at)")
+        if "updated_by" not in cols:
+            c.execute("ALTER TABLE studio_designs ADD COLUMN updated_by INTEGER")
         c.commit()
 
 
@@ -122,6 +129,9 @@ def _meta(r: sqlite3.Row) -> dict[str, Any]:
            "created_at": r["created_at"], "updated_at": r["updated_at"]}
     if "category" in keys:
         out["category"] = r["category"]
+    for k in ("team_id", "updated_by", "user_id"):
+        if k in keys:
+            out[k] = r[k]
     return out
 
 
@@ -131,6 +141,12 @@ class DesignIn(BaseModel):
     data: dict[str, Any]
     thumb: str = Field(default="", max_length=600_000)
     local_id: str | None = Field(default=None, max_length=60)
+    team_id: int | None = None          # только при создании: дизайн сразу в команде
+    base_updated_at: float | None = None  # защита от перезаписи чужих правок (409, если на сервере новее)
+
+
+class MoveIn(BaseModel):
+    team_id: int | None = None
 
 
 class UploadIn(BaseModel):
@@ -631,10 +647,18 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def uid(principal: dict) -> int:
         return require_user(principal)
 
-    def own(c: sqlite3.Connection, design_id: int, user_id: int) -> sqlite3.Row:
-        r = c.execute("SELECT * FROM studio_designs WHERE id=? AND user_id=?", (design_id, user_id)).fetchone()
-        if not r:
+    teams_init_db(db_path)
+
+    def own(c: sqlite3.Connection, design_id: int, user_id: int, need: str = "editor") -> sqlite3.Row:
+        """Автор — всё; дизайн команды — по роли (viewer читает, editor правит, admin удаляет чужое)."""
+        r = c.execute("SELECT * FROM studio_designs WHERE id=?", (design_id,)).fetchone()
+        if r and r["user_id"] == user_id:
+            return r
+        role = member_role(c, r["team_id"], user_id) if r and r["team_id"] else None
+        if not role:
             raise HTTPException(status_code=404, detail="Дизайн не найден")
+        if TEAM_RANK[role] < TEAM_RANK[need]:
+            raise HTTPException(status_code=403, detail="В этой команде у вас роль «наблюдатель» — можно только смотреть")
         return r
 
     def check_size(p: DesignIn) -> str:
@@ -647,23 +671,29 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         return v if v in FORMATS else "square"
 
     @router.get("/designs")
-    def list_designs(q: str = "", principal: dict = Depends(principal_dep)):
+    def list_designs(q: str = "", team: int | None = None, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
+        cols = "id,name,format,thumb,created_at,updated_at,team_id,updated_by,user_id"
         with closing(_connect(db_path)) as c:
-            if q.strip():
-                rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at FROM studio_designs WHERE user_id=? AND is_template=0 "
-                                 "AND name LIKE ? ORDER BY updated_at DESC", (user_id, f"%{q.strip()}%")).fetchall()
+            if team:
+                if not member_role(c, team, user_id):
+                    raise HTTPException(status_code=404, detail="Команда не найдена")
+                where, args = "team_id=? AND is_template=0", [team]
             else:
-                rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at FROM studio_designs WHERE user_id=? AND is_template=0 "
-                                 "ORDER BY updated_at DESC", (user_id,)).fetchall()
+                where, args = "user_id=? AND team_id IS NULL AND is_template=0", [user_id]
+            if q.strip():
+                where += " AND name LIKE ?"
+                args.append(f"%{q.strip()}%")
+            rows = c.execute(f"SELECT {cols} FROM studio_designs WHERE {where} ORDER BY updated_at DESC", args).fetchall()
         return {"designs": [_meta(r) for r in rows]}
 
     @router.get("/designs/{design_id}")
     def get_design(design_id: int, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
-            r = own(c, design_id, user_id)
-        return {**_meta(r), "data": json.loads(r["data"])}
+            r = own(c, design_id, user_id, "viewer")
+            role = "author" if r["user_id"] == user_id else member_role(c, r["team_id"], user_id)
+        return {**_meta(r), "data": json.loads(r["data"]), "access": role}
 
     @router.post("/designs")
     def create_design(p: DesignIn, principal: dict = Depends(principal_dep)):
@@ -673,9 +703,13 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
                 ex = c.execute("SELECT * FROM studio_designs WHERE user_id=? AND local_id=?", (user_id, p.local_id)).fetchone()
                 if ex:
                     return _meta(ex)
-            cur = c.execute("INSERT INTO studio_designs(user_id,local_id,name,format,data,thumb,created_at,updated_at) "
-                            "VALUES(?,?,?,?,?,?,?,?)", (user_id, p.local_id, p.name.strip()[:200] or "Новый дизайн",
-                                                        fmt(p.format), data, p.thumb, now, now))
+            if p.team_id:
+                role = member_role(c, p.team_id, user_id)
+                if not role or TEAM_RANK[role] < TEAM_RANK["editor"]:
+                    raise HTTPException(status_code=403, detail="Создавать дизайны в команде может редактор и выше")
+            cur = c.execute("INSERT INTO studio_designs(user_id,local_id,name,format,data,thumb,created_at,updated_at,team_id,updated_by) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?)", (user_id, p.local_id, p.name.strip()[:200] or "Новый дизайн",
+                                                        fmt(p.format), data, p.thumb, now, now, p.team_id or None, user_id))
             c.commit()
             r = own(c, cur.lastrowid, user_id)
         return _meta(r)
@@ -685,6 +719,10 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         user_id, data = uid(principal), check_size(p)
         with closing(_connect(db_path)) as c:
             cur = own(c, design_id, user_id)
+            if (p.base_updated_at is not None and cur["updated_at"] > p.base_updated_at + 0.001
+                    and cur["updated_by"] and cur["updated_by"] != user_id):
+                raise HTTPException(status_code=409, detail={"conflict": True, "updated_by": cur["updated_by"],
+                                                             "updated_at": cur["updated_at"]})
             # История версий: снимок прежнего состояния не чаще раза в 10 минут, храним 30 последних.
             last = c.execute("SELECT MAX(created_at) FROM studio_versions WHERE design_id=?", (design_id,)).fetchone()[0]
             if cur["data"] != data and (not last or time.time() - last >= VERSION_EVERY):
@@ -693,8 +731,8 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
                 c.execute("DELETE FROM studio_versions WHERE design_id=? AND id NOT IN (SELECT id FROM studio_versions "
                           "WHERE design_id=? ORDER BY created_at DESC LIMIT 30)", (design_id, design_id))
             c.execute("UPDATE studio_designs SET name=?,format=?,data=?,thumb=CASE WHEN ?<>'' THEN ? ELSE thumb END,"
-                      "updated_at=? WHERE id=?", (p.name.strip()[:200] or "Новый дизайн", fmt(p.format), data,
-                                                  p.thumb, p.thumb, time.time(), design_id))
+                      "updated_at=?,updated_by=? WHERE id=?", (p.name.strip()[:200] or "Новый дизайн", fmt(p.format), data,
+                                                  p.thumb, p.thumb, time.time(), user_id, design_id))
             c.commit()
             r = own(c, design_id, user_id)
         return _meta(r)
@@ -709,14 +747,32 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             r = own(c, design_id, user_id)
         return _meta(r)
 
+    @router.put("/designs/{design_id}/team")
+    def move_design(design_id: int, p: MoveIn, principal: dict = Depends(principal_dep)):
+        """Перенести дизайн в команду или обратно в личные (только автор или админ команды)."""
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            r = own(c, design_id, user_id, "viewer")
+            if r["user_id"] != user_id and TEAM_RANK.get(member_role(c, r["team_id"], user_id) or "", -1) < TEAM_RANK["admin"]:
+                raise HTTPException(status_code=403, detail="Переносить чужой дизайн может только админ команды")
+            if p.team_id:
+                role = member_role(c, p.team_id, user_id)
+                if not role or TEAM_RANK[role] < TEAM_RANK["editor"]:
+                    raise HTTPException(status_code=403, detail="Нужна роль редактора в этой команде")
+            c.execute("UPDATE studio_designs SET team_id=?, updated_at=?, updated_by=? WHERE id=?",
+                      (p.team_id or None, time.time(), user_id, design_id))
+            c.commit()
+            return _meta(c.execute("SELECT * FROM studio_designs WHERE id=?", (design_id,)).fetchone())
+
     @router.post("/designs/{design_id}/duplicate")
     def duplicate_design(design_id: int, principal: dict = Depends(principal_dep)):
         user_id, now = uid(principal), time.time()
         with closing(_connect(db_path)) as c:
-            r = own(c, design_id, user_id)
-            cur = c.execute("INSERT INTO studio_designs(user_id,name,format,data,thumb,created_at,updated_at) "
-                            "VALUES(?,?,?,?,?,?,?)", (user_id, (r["name"] + " (копия)")[:200], r["format"], r["data"],
-                                                      r["thumb"], now, now))
+            r = own(c, design_id, user_id, "viewer")
+            team = r["team_id"] if r["team_id"] and TEAM_RANK.get(member_role(c, r["team_id"], user_id) or "", -1) >= TEAM_RANK["editor"] else None
+            cur = c.execute("INSERT INTO studio_designs(user_id,name,format,data,thumb,created_at,updated_at,team_id,updated_by) "
+                            "VALUES(?,?,?,?,?,?,?,?,?)", (user_id, (r["name"] + " (копия)")[:200], r["format"], r["data"],
+                                                      r["thumb"], now, now, team, user_id))
             c.commit()
             n = own(c, cur.lastrowid, user_id)
         return _meta(n)
@@ -745,7 +801,7 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def list_versions(design_id: int, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
-            own(c, design_id, user_id)
+            own(c, design_id, user_id, "viewer")
             rows = c.execute("SELECT id,thumb,created_at FROM studio_versions WHERE design_id=? ORDER BY created_at DESC",
                              (design_id,)).fetchall()
         return {"versions": [dict(r) for r in rows]}
@@ -776,8 +832,8 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def get_share(design_id: int, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
-            own(c, design_id, user_id)
-            r = c.execute("SELECT * FROM studio_shares WHERE design_id=? AND user_id=?", (design_id, user_id)).fetchone()
+            own(c, design_id, user_id, "viewer")
+            r = c.execute("SELECT * FROM studio_shares WHERE design_id=?", (design_id,)).fetchone()
         return share_meta(r)
 
     @router.post("/designs/{design_id}/share")
@@ -797,7 +853,7 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         now = time.time()
         with closing(_connect(db_path)) as c:
             d = own(c, design_id, user_id)
-            old = c.execute("SELECT token FROM studio_shares WHERE design_id=? AND user_id=?", (design_id, user_id)).fetchone()
+            old = c.execute("SELECT token FROM studio_shares WHERE design_id=?", (design_id,)).fetchone()
             if old:
                 c.execute("UPDATE studio_shares SET pages=?, name=?, format=?, updated_at=? WHERE token=?",
                           (json.dumps(pages), d["name"], d["format"], now, old["token"]))
@@ -814,7 +870,8 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def delete_share(design_id: int, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
-            c.execute("DELETE FROM studio_shares WHERE design_id=? AND user_id=?", (design_id, user_id))
+            own(c, design_id, user_id)
+            c.execute("DELETE FROM studio_shares WHERE design_id=?", (design_id,))
             c.commit()
         return {"token": None}
 
@@ -904,7 +961,9 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def delete_design(design_id: int, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
-            own(c, design_id, user_id)
+            r = own(c, design_id, user_id, "viewer")
+            if r["user_id"] != user_id and TEAM_RANK.get(member_role(c, r["team_id"], user_id) or "", -1) < TEAM_RANK["admin"]:
+                raise HTTPException(status_code=403, detail="Чужой дизайн команды удаляет только админ или автор")
             c.execute("DELETE FROM studio_designs WHERE id=?", (design_id,))
             c.execute("DELETE FROM studio_versions WHERE design_id=?", (design_id,))
             c.execute("DELETE FROM studio_shares WHERE design_id=?", (design_id,))
