@@ -805,6 +805,12 @@ def init_db() -> None:
             if col not in existing_cols:
                 db.execute(f"ALTER TABLE creatives ADD COLUMN {col} {coltype}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_carousel ON creatives(carousel_id)")
+        # Папки-подборки по теме (23.11.2026): вложенность и метка темы таксономии (раздел/подрубрика).
+        col_cols = {r["name"] for r in db.execute("PRAGMA table_info(collections)").fetchall()}
+        for col, coltype in (("parent_id", "INTEGER"), ("topic_main", "TEXT"), ("topic_sub", "TEXT")):
+            if col not in col_cols:
+                db.execute(f"ALTER TABLE collections ADD COLUMN {col} {coltype}")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_collections_parent ON collections(parent_id)")
         # Состав каруселей (17.11.2026): слайды приходят от парсера отдельно от креативов, потому что
         # одно объявление бывает в нескольких каруселях, а creatives.carousel_id хранит только одну.
         db.execute(
@@ -4752,19 +4758,119 @@ def api_list_collections(principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
         rows = db.execute(
-            "SELECT c.id,c.name,c.description,c.created_at,"
-            "(SELECT COUNT(*) FROM collection_items i WHERE i.collection_id=c.id) AS items_count "
+            "SELECT c.id,c.name,c.description,c.created_at,c.parent_id,c.topic_main,c.topic_sub,"
+            "(SELECT COUNT(*) FROM collection_items i WHERE i.collection_id=c.id) AS own_count,"
+            "(SELECT COUNT(*) FROM collections ch WHERE ch.parent_id=c.id) AS children_count "
             "FROM collections c WHERE c.owner_user_id=? ORDER BY c.created_at DESC",
             (user_id,),
         ).fetchall()
         items = [dict(r) for r in rows]
         for it in items:
+            # у папки темы («Юристы») объявления лежат во вложенных папках — считаем и показываем их тоже
+            ids = [it["id"]] + [r["id"] for r in db.execute("SELECT id FROM collections WHERE parent_id=?", (it["id"],))]
+            ph = ",".join("?" * len(ids))
+            it["items_count"] = db.execute(
+                f"SELECT COUNT(DISTINCT group_key) FROM collection_items WHERE collection_id IN ({ph})", ids).fetchone()[0]
             sub = db.execute(
                 "SELECT c.image_url, i.added_at FROM collection_items i JOIN creatives c ON c.id=i.representative_creative_id "
-                "WHERE i.collection_id=? ORDER BY i.added_at DESC LIMIT 12", (it["id"],)).fetchall()
+                f"WHERE i.collection_id IN ({ph}) ORDER BY i.added_at DESC LIMIT 12", ids).fetchall()
             it["updated_at"] = sub[0]["added_at"] if sub else it["created_at"]
             it["thumbs"] = [r["image_url"] for r in sub if r["image_url"]][:4]
     return {"items": items}
+
+
+def _collection_tree_ids(db, collection_id: int) -> list[int]:
+    """Подборка и все вложенные в неё папки (для удаления)."""
+    out, todo = [], [collection_id]
+    while todo:
+        cid = todo.pop()
+        out.append(cid)
+        todo += [r["id"] for r in db.execute("SELECT id FROM collections WHERE parent_id=?", (cid,))]
+    return out
+
+
+class TopicFolderIn(BaseModel):
+    # «Юристы» — папка раздела с папками подрубрик внутри; «Юристы>Семейные споры» — одна папка подрубрики
+    path: str = Field(min_length=1, max_length=400)
+    # текущие фильтры библиотеки — папка собирается из тех же объявлений, что видны на экране
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+_TOPIC_FILTER_KEYS = {"inn", "platform", "q", "status", "job_id", "has_advertiser", "has_app", "has_discount",
+                      "campaign_id", "utm_campaign", "keyword", "intent", "ai_intent", "only_relevant", "history",
+                      "date_from", "date_to", "source", "platform_label", "format", "ids", "exclude_ids", "feature"}
+TOPIC_FOLDER_MAX = 5000
+
+
+@app.post("/api/v1/collections/from-topic")
+def api_collection_from_topic(payload: TopicFolderIn, principal: dict = Depends(public_api_principal)):
+    """Папка-подборка из темы таксономии с текущими объявлениями. Повторный вызов для той же темы не
+    создаёт дубль, а дополняет существующие папки новыми объявлениями. Раздел → папка раздела + папки
+    подрубрик внутри; подрубрика → её папка внутри папки раздела (папка раздела создаётся при отсутствии)."""
+    user_id = require_user_principal(principal)
+    main, _, sub = payload.path.partition(">")
+    main, sub = main.strip(), sub.split(">")[0].strip()
+    pairs = taxonomy.valid_pairs()
+    if main not in pairs or (sub and sub not in pairs[main]):
+        raise HTTPException(status_code=422, detail="Такой темы нет в таксономии")
+    flt = {k: v for k, v in (payload.filters or {}).items() if k in _TOPIC_FILTER_KEYS and v not in (None, "")}
+    if "job_id" in flt:
+        flt["job_id"] = int(flt["job_id"])
+    for k in ("has_advertiser", "has_app", "has_discount"):
+        if k in flt:
+            flt[k] = str(flt[k]).lower() in ("1", "true", "yes")
+    node = f"{main}>{sub}" if sub else main
+    found: dict[str, tuple[int, str]] = {}  # group_key -> (creative_id, подрубрика)
+    offset = 0
+    while len(found) < TOPIC_FOLDER_MAX:
+        page = api_list_creatives(**flt, ai_tree=node, group="1", limit=200, offset=offset, principal=principal)
+        rows = page.get("items") or []
+        for it in rows:
+            key = it.get("content_fingerprint") or f"hash:{it.get('creative_hash')}"
+            if key not in found:
+                found[key] = (int(it["id"]), it.get("ai_intent_sub") or "Другое")
+        offset += 200
+        if len(rows) < 200 or offset >= (page.get("total") or 0):
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="По этой теме с текущими фильтрами объявлений нет")
+
+    stamp = now_iso()
+    with closing(connect()) as db:
+        def folder(name: str, t_main: str, t_sub: str | None, parent: int | None) -> tuple[int, bool]:
+            row = db.execute("SELECT id FROM collections WHERE owner_user_id=? AND topic_main=? AND "
+                             "COALESCE(topic_sub,'')=? AND COALESCE(parent_id,0)=?",
+                             (user_id, t_main, t_sub or "", parent or 0)).fetchone()
+            if row:
+                return int(row["id"]), False
+            cur = db.execute(
+                "INSERT INTO collections(owner_user_id,name,description,created_at,parent_id,topic_main,topic_sub) VALUES(?,?,?,?,?,?,?)",
+                (user_id, name, ("Тема «" + t_main + (" › " + t_sub if t_sub else "") + "» — папка создана из фильтра темы"),
+                 stamp, parent, t_main, t_sub))
+            return int(cur.lastrowid), True
+
+        root_id, root_new = folder(main, main, None, None)
+        by_sub: dict[str, list[tuple[str, int]]] = {}
+        for key, (cid, s_name) in found.items():
+            by_sub.setdefault(sub or s_name, []).append((key, cid))
+        created, added = (1 if root_new else 0), 0
+        subs_out = []
+        for s_name, members in sorted(by_sub.items(), key=lambda kv: (kv[0] == "Другое", -len(kv[1]))):
+            fid, is_new = folder(s_name, main, s_name, root_id)
+            created += 1 if is_new else 0
+            n = 0
+            for key, cid in members:
+                n += db.execute(
+                    "INSERT INTO collection_items(collection_id,group_key,representative_creative_id,added_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(collection_id,group_key) DO NOTHING", (fid, key, cid, stamp)).rowcount or 0
+            added += n
+            subs_out.append({"id": fid, "name": s_name, "items": len(members), "added": n, "new": is_new})
+        create_notification(db, user_id, "collection_created",
+                            f"Папка «{main if not sub else sub}» из темы: +{added} объявлений", "", "intel-collections")
+        db.commit()
+    focus = subs_out[0]["id"] if sub else root_id
+    return {"root_id": root_id, "focus_id": focus, "folders": subs_out, "folders_created": created,
+            "added": added, "found": len(found), "truncated": len(found) >= TOPIC_FOLDER_MAX}
 
 
 @app.post("/api/v1/collections")
@@ -4793,25 +4899,34 @@ def api_delete_collection(collection_id: int, principal: dict = Depends(public_a
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
         _require_own_collection(db, collection_id, user_id)
-        db.execute("DELETE FROM collections WHERE id=?", (collection_id,))
+        for cid in _collection_tree_ids(db, collection_id):  # вместе с вложенными папками
+            db.execute("DELETE FROM collection_items WHERE collection_id=?", (cid,))
+            db.execute("DELETE FROM collections WHERE id=?", (cid,))
         db.commit()
     return {"ok": True}
 
 
 @app.get("/api/v1/collections/{collection_id}/items")
-def api_list_collection_items(collection_id: int, principal: dict = Depends(public_api_principal)):
+def api_list_collection_items(collection_id: int, deep: int = 0, principal: dict = Depends(public_api_principal)):
+    """deep=1 — объявления папки вместе со всеми вложенными папками (папка темы «Юристы» + подрубрики), без повторов."""
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
         _require_own_collection(db, collection_id, user_id)
+        ids = _collection_tree_ids(db, collection_id) if deep else [collection_id]
+        ph = ",".join("?" * len(ids))
         rows = db.execute(
-            "SELECT i.group_key, i.added_at, c.* FROM collection_items i "
+            "SELECT i.group_key, i.added_at, i.collection_id AS folder_id, c.* FROM collection_items i "
             "JOIN creatives c ON c.id=i.representative_creative_id "
-            "WHERE i.collection_id=? ORDER BY i.added_at DESC",
-            (collection_id,),
+            f"WHERE i.collection_id IN ({ph}) ORDER BY i.added_at DESC",
+            ids,
         ).fetchall()
-    items = []
+    items, seen = [], set()
     for r in rows:
+        if r["group_key"] in seen:
+            continue
+        seen.add(r["group_key"])
         d = _creative_row_to_dict(r)
+        d["folder_id"] = r["folder_id"]
         d["group_key"] = r["group_key"]
         d["added_at"] = r["added_at"]
         items.append(d)
@@ -4885,6 +5000,7 @@ def api_merge_collections(collection_id: int, payload: CollectionBulkIn, princip
                 "SELECT ?,group_key,representative_creative_id,added_at FROM collection_items WHERE collection_id=? "
                 "ON CONFLICT(collection_id,group_key) DO NOTHING", (collection_id, other))
             db.execute("DELETE FROM collection_items WHERE collection_id=?", (other,))
+            db.execute("UPDATE collections SET parent_id=? WHERE parent_id=?", (collection_id, other))  # вложенные папки — в целевую
             db.execute("DELETE FROM collections WHERE id=?", (other,))
         db.commit()
     return {"ok": True}
@@ -4894,10 +5010,13 @@ def api_merge_collections(collection_id: int, payload: CollectionBulkIn, princip
 def api_delete_collections(payload: CollectionBulkIn, principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
-        for cid in payload.ids:
-            _require_own_collection(db, cid, user_id)
-            db.execute("DELETE FROM collection_items WHERE collection_id=?", (cid,))
-            db.execute("DELETE FROM collections WHERE id=?", (cid,))
+        for top in payload.ids:
+            if not db.execute("SELECT 1 FROM collections WHERE id=?", (top,)).fetchone():
+                continue  # уже удалена вместе с родительской папкой
+            _require_own_collection(db, top, user_id)
+            for cid in _collection_tree_ids(db, top):
+                db.execute("DELETE FROM collection_items WHERE collection_id=?", (cid,))
+                db.execute("DELETE FROM collections WHERE id=?", (cid,))
         db.commit()
     return {"ok": True}
 
