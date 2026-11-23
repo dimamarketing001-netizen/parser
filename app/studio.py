@@ -157,6 +157,7 @@ class UploadIn(BaseModel):
 class AsTemplateIn(BaseModel):
     name: str = Field(default="", max_length=200)
     category: str = Field(default="", max_length=60)
+    team_id: int | None = None  # шаблон команды (видят все участники)
 
 
 class FontIn(BaseModel):
@@ -782,10 +783,14 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         """Копия дизайна в «Мои шаблоны» (сам дизайн не меняется)."""
         user_id, now = uid(principal), time.time()
         with closing(_connect(db_path)) as c:
-            r = own(c, design_id, user_id)
-            cur = c.execute("INSERT INTO studio_designs(user_id,name,format,data,thumb,created_at,updated_at,is_template,category) "
-                            "VALUES(?,?,?,?,?,?,?,1,?)", (user_id, (p.name.strip() or r["name"])[:200], r["format"], r["data"],
-                                                         r["thumb"], now, now, p.category.strip()[:60] or "Мои"))
+            r = own(c, design_id, user_id, "viewer")
+            if p.team_id:
+                role = member_role(c, p.team_id, user_id)
+                if not role or TEAM_RANK[role] < TEAM_RANK["editor"]:
+                    raise HTTPException(status_code=403, detail="Шаблоны команды сохраняет редактор и выше")
+            cur = c.execute("INSERT INTO studio_designs(user_id,name,format,data,thumb,created_at,updated_at,is_template,category,team_id,updated_by) "
+                            "VALUES(?,?,?,?,?,?,?,1,?,?,?)", (user_id, (p.name.strip() or r["name"])[:200], r["format"], r["data"],
+                                                         r["thumb"], now, now, p.category.strip()[:60] or "Мои", p.team_id or None, user_id))
             c.commit()
             return _meta(own(c, cur.lastrowid, user_id))
 
@@ -793,8 +798,10 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     def list_templates(principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(_connect(db_path)) as c:
-            rows = c.execute("SELECT id,name,format,thumb,created_at,updated_at,category FROM studio_designs "
-                             "WHERE user_id=? AND is_template=1 ORDER BY updated_at DESC", (user_id,)).fetchall()
+            teams = [r["team_id"] for r in c.execute("SELECT team_id FROM team_members WHERE user_id=?", (user_id,))]
+            q = ("SELECT id,name,format,thumb,created_at,updated_at,category,team_id,user_id FROM studio_designs WHERE is_template=1 AND "
+                 "((user_id=? AND team_id IS NULL)" + (f" OR team_id IN ({','.join('?' * len(teams))})" if teams else "") + ") ORDER BY updated_at DESC")
+            rows = c.execute(q, [user_id, *teams]).fetchall()
         return {"templates": [_meta(r) for r in rows]}
 
     @router.get("/designs/{design_id}/versions")
