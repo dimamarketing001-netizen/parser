@@ -110,6 +110,10 @@ def init_db(path: Path) -> None:
             format TEXT NOT NULL DEFAULT 'square', pages TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_studio_share_design ON studio_shares(design_id)")
+        c.execute("""CREATE TABLE IF NOT EXISTS studio_share_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL, design_id INTEGER NOT NULL, page INTEGER NOT NULL DEFAULT 0,
+            x REAL NOT NULL, y REAL NOT NULL, name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, created_at REAL NOT NULL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_share_comments ON studio_share_comments(design_id, created_at)")
         cols = {r[1] for r in c.execute("PRAGMA table_info(studio_designs)")}
         if "is_template" not in cols:
             c.execute("ALTER TABLE studio_designs ADD COLUMN is_template INTEGER NOT NULL DEFAULT 0")
@@ -209,6 +213,25 @@ VIDEO_MAX = 80_000_000
 
 class AudioFetchIn(BaseModel):
     url: str = Field(min_length=8, max_length=2000)
+
+
+class ShareCommentIn(BaseModel):
+    page: int = Field(default=0, ge=0, le=29)
+    x: float = Field(ge=0, le=100)
+    y: float = Field(ge=0, le=100)
+    name: str = Field(default="", max_length=60)
+    text: str = Field(min_length=1, max_length=1000)
+
+
+def _notify_user(user_id: int, title: str, text: str, link: str) -> None:
+    """Уведомление в ЛК через основной модуль (ленивый импорт — без правок main.py)."""
+    try:
+        from . import main as M  # noqa: PLC0415
+        with closing(M.connect()) as db:
+            M.create_notification(db, user_id, "studio_comment", title, text, link)
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[studio] уведомление не отправлено: {exc}", flush=True)
 
 
 class AITranslateIn(BaseModel):
@@ -906,8 +929,42 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             c.execute("UPDATE studio_shares SET views=views+1 WHERE token=?", (token,))
             c.commit()
         w, h = FORMATS.get(r["format"]) or (1080, 1080)
+        with closing(_connect(db_path)) as c:
+            cm = [dict(x) for x in c.execute("SELECT id,page,x,y,name,text,created_at FROM studio_share_comments WHERE token=? "
+                                             "ORDER BY created_at LIMIT 300", (token,))]
         return {"name": r["name"], "format": r["format"], "width": w, "height": h,
-                "pages": json.loads(r["pages"]), "updated_at": r["updated_at"]}
+                "pages": json.loads(r["pages"]), "updated_at": r["updated_at"], "comments": cm}
+
+    @router.post("/share/{token}/comments")
+    def public_comment(token: str, p: ShareCommentIn):
+        """Без входа: комментарий клиента к странице (точка в % картинки). Не больше 300 на ссылку."""
+        if not SHARE_TOKEN_RE.match(token):
+            raise HTTPException(status_code=404, detail="Ссылка не найдена")
+        with closing(_connect(db_path)) as c:
+            r = c.execute("SELECT * FROM studio_shares WHERE token=?", (token,)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail="Ссылка не найдена или отключена")
+            if c.execute("SELECT COUNT(*) FROM studio_share_comments WHERE token=?", (token,)).fetchone()[0] >= 300:
+                raise HTTPException(status_code=429, detail="Слишком много комментариев к этой ссылке")
+            recent = c.execute("SELECT COUNT(*) FROM studio_share_comments WHERE token=? AND created_at>?", (token, time.time() - 60)).fetchone()[0]
+            if recent >= 10:
+                raise HTTPException(status_code=429, detail="Слишком часто — подождите минуту")
+            now = time.time()
+            cur = c.execute("INSERT INTO studio_share_comments(token,design_id,page,x,y,name,text,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                            (token, r["design_id"], p.page, p.x, p.y, p.name.strip()[:60], p.text.strip(), now))
+            c.commit()
+        who = p.name.strip() or "Клиент"
+        _notify_user(r["user_id"], f"Комментарий к «{r['name']}»", f"{who}: {p.text.strip()[:140]}", "studio-library")
+        return {"id": cur.lastrowid, "created_at": now}
+
+    @router.get("/designs/{design_id}/comments")
+    def design_comments(design_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            own(c, design_id, user_id, "viewer")
+            rows = c.execute("SELECT id,page,x,y,name,text,created_at FROM studio_share_comments WHERE design_id=? ORDER BY created_at",
+                             (design_id,)).fetchall()
+        return {"comments": [dict(x) for x in rows]}
 
     # ------------------------------------------------ видео для слоёв (файлы на диске; ссылка с ключом — для <video src>)
     video_dir = Path(db_path).parent / "studio_videos"
