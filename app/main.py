@@ -4794,3 +4794,7 @@ def _teams_notify(user_id, title, text, link):
 
 
 app.include_router(_build_teams_router(public_api_principal, require_user_principal, DATA_DIR, _teams_users_lookup, _teams_notify))
+
+from .planner import build_router as _build_planner_router  # noqa: E402
+
+app.include_router(_build_planner_router(public_api_principal, require_user_principal, DATA_DIR, _teams_notify))
