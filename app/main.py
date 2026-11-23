@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+from urllib.parse import urlsplit
 import secrets
 import sqlite3
 import threading
@@ -22,6 +23,8 @@ import snowballstemmer
 
 from app import embeddings as emb
 from app import ai_intent as aii
+from app import taxonomy
+from app import console as _console
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,8 +37,6 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PARSYA_DATA_DIR", APP_DIR / "data")).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.getenv("PARSYA_SQLITE_PATH", DATA_DIR / "control.sqlite3")).resolve()
-ADMIN_USER = os.getenv("PARSYA_ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("PARSYA_ADMIN_PASSWORD", "")
 WORKER_TOKEN = os.getenv("PARSYA_WORKER_TOKEN", "")
 PUBLIC_API_TOKEN = os.getenv("PARSYA_PUBLIC_API_TOKEN", "")
 # Separate, narrower-scope token for addAvto (a different project on the same
@@ -63,185 +64,6 @@ MAX_HTML_CHARS = 2_000_000
 # emits literal class names (.panel/.metric/.btn/table/.badge/...), so
 # this re-skins those classes' CSS rather than renaming them, keeping
 # every other already-written page working unmodified.
-DESIGN_TOKENS_CSS = """
-:root{--bg:#f7f7fb;--panel:#fff;--ink:#20212a;--muted:#9294a3;--line:#ececf3;--green:#39ff88;--green-dark:#20a66a;--violet:#8c72f6;--nav:#fff;--nav-muted:#777b8d;--red:#c0392b;--amber:#c18b3e}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:"DM Sans",ui-sans-serif,system-ui,sans-serif;font-size:13px;letter-spacing:-.012em}
-a{color:var(--violet);text-decoration:none}a:hover{text-decoration:underline}
-button,input,select,textarea{font:inherit}
-.shell{min-height:100vh;display:grid;grid-template-columns:258px minmax(0,1fr)}
-aside.sidebar{background:#fff;color:#292a36;padding:27px 17px 20px;border-right:1px solid #eeeef4;display:flex;flex-direction:column;gap:10px}
-.brand{display:flex;align-items:center;gap:12px;padding:0 11px 22px}
-.brand-mark{width:39px;height:39px;border-radius:14px;background:#24242f;color:var(--green);display:grid;place-items:center;font-size:19px;font-weight:800;box-shadow:0 5px 12px #25253216}
-.brand b{display:block;font-size:15px;letter-spacing:.13em;color:#242530}
-.brand small{display:block;color:#9b9dac;letter-spacing:.14em;font-size:8px;margin-top:3px}
-nav{display:grid;gap:6px}
-nav a{color:#777b8c;border-radius:12px;padding:12px 13px;display:flex;align-items:center;gap:11px;font-size:12px;transition:background .18s,color .18s}
-nav a svg{width:16px;height:16px;flex-shrink:0}
-nav a:hover{background:#f7f6fc;color:#363448}
-nav a.active{background:#f0edff;color:#7057dd;font-weight:700}
-nav a.nav-back{color:#9a9baa;margin-bottom:6px;padding-bottom:17px;border-bottom:1px solid #f0f0f5;border-radius:0}
-nav a.nav-back:hover{background:transparent;color:#363448}
-.side-bottom{margin-top:auto;border-top:1px solid #f0f0f5;padding-top:16px;color:#9a9baa;font-size:11px;display:flex;align-items:center;gap:10px}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green-dark);flex-shrink:0}
-.logout{margin-left:auto;background:#f7f6fc;border:1px solid #ececf3;color:#6c6f80;padding:7px 11px;border-radius:9px;cursor:pointer;font-size:10px;font-weight:700}
-.logout:hover{border-color:#d4cdf8;color:#7057dd}
-main.main{min-width:0}
-.topbar{height:72px;background:#f7f7fb;border-bottom:1px solid #eeeef4;display:flex;align-items:center;justify-content:space-between;padding:0 34px;gap:15px}
-.crumb{font-size:11px;color:#a0a1af}.crumb strong{color:#373746;font-weight:700}
-.top-actions{display:flex;align-items:center;gap:10px}
-.profiledot{width:36px;height:36px;border-radius:12px;background:#282735;color:var(--green);display:grid;place-items:center;font-weight:800;border:3px solid #fff;box-shadow:0 0 0 1px #e9e8f0}
-.content{max-width:1500px;padding:32px 34px 48px;margin:0 auto}
-.headline{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:27px}
-.eyebrow{font-size:9px;color:#7158dc;font-weight:800;letter-spacing:.16em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
-.eyebrow:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px #39ff8825}
-.h1{font:800 clamp(22px,3vw,30px)/1.2 Manrope,sans-serif;letter-spacing:-.045em;margin:10px 0 7px;color:#22232e}
-.subtitle{font-size:12px;color:var(--muted);line-height:1.65;max-width:620px}
-.primary,.secondary,.btn{border-radius:12px;padding:11px 15px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:700;font-size:11px;white-space:nowrap;border:1px solid transparent;cursor:pointer;transition:transform .15s,box-shadow .15s,background .15s}
-.primary,.btn{background:#272633;color:#fff;border-color:#272633;box-shadow:0 6px 14px #25243514}
-.primary:hover,.btn:hover{background:#3a384b;transform:translateY(-1px);text-decoration:none}
-.secondary,.btn.secondary{background:#fff;border-color:var(--line);color:#626477}
-.secondary:hover,.btn.secondary:hover{border-color:#d4cdf8;background:#fbfaff;text-decoration:none}
-.btn.danger{background:#fdecea;border-color:#f5c2bd;color:var(--red)}
-h2{font:800 15px Manrope,sans-serif;margin:0 0 15px;letter-spacing:-.025em;color:#272733}
-.muted{color:var(--muted)}
-.summary,.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:25px}
-.metric,.stat{padding:21px 22px;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 5px 20px #2b294a04;min-width:0}
-.metric .label,.stathead{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#858799;font-size:11px}
-.metric .value,.statvalue{font:800 27px Manrope,sans-serif;letter-spacing:-.045em;margin:14px 0 6px;color:#242431}
-.metric .hint,.statfoot{font-size:10px;color:#9a9baa}
-.staticon{width:36px;height:36px;border-radius:12px;background:#e9faef;color:var(--green-dark);display:grid;place-items:center;flex-shrink:0}
-.staticon svg{width:16px;height:16px}
-.staticon.violet{background:#f0edff;color:#8066e8}.staticon.gray{background:#f2f2f7;color:#73758b}.staticon.amber{background:#fff5e7;color:var(--amber)}
-.panel,.card{background:#fff;border:1px solid var(--line);border-radius:19px;box-shadow:0 5px 20px #2b294a04}
-.panel{padding:22px;margin-bottom:20px}
-.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}
-.table-wrap{overflow:auto}
-table{width:100%;border-collapse:collapse;white-space:nowrap}
-th{color:#9a9baa;font-size:10px;text-align:left;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:10px;border-bottom:1px solid var(--line)}
-td{padding:13px 10px;border-bottom:1px solid #f1f1f6;vertical-align:middle;color:#45465a}
-tr:last-child td{border-bottom:0}
-.badge,.status{display:inline-flex;align-items:center;gap:6px;border-radius:9px;padding:6px 9px;font-size:10px;font-weight:700;background:#f2f2f7;color:#5c5e70}
-.badge:before,.status:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.badge.ok,.badge.completed,.status.completed{background:#eaf8ef;color:var(--green-dark)}
-.badge.running,.status.running{background:#eaf3ff;color:#2868b2}
-.badge.failed,.badge.error,.status.failed{background:#fdecea;color:var(--red)}
-.badge.queued,.status.queued{background:#f0edff;color:#7158dc}
-.formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
-label{display:block;color:#596371;font-size:11px;font-weight:700;margin-bottom:8px}
-input,select,textarea{width:100%;background:#fff;border:1px solid var(--line);color:var(--ink);padding:12px 13px;border-radius:12px;outline:none;transition:border-color .15s}
-input:focus,select:focus,textarea:focus{border-color:var(--violet)}
-.field{margin-bottom:16px}
-.help{font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6}
-.empty{padding:36px;text-align:center;color:var(--muted);border:1px dashed #dfe2e9;border-radius:16px;background:#fff}
-.filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
-.filters input,.filters select{width:auto;min-width:170px}
-.creative-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
-.creative{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 5px 20px #2b294a04;transition:transform .2s,box-shadow .2s}
-.creative:hover{transform:translateY(-3px);box-shadow:0 16px 34px #2a284511}
-.creative-preview{height:195px;background:#f0eff8;color:#172235;overflow:hidden;display:flex;align-items:center;justify-content:center}
-.creative-preview iframe{width:100%;height:100%;border:0;background:white}
-.creative-preview img{max-width:100%;max-height:100%;object-fit:contain}
-.creative-info{padding:17px 18px}
-.creative-info h3{font-size:13px;line-height:1.4;margin:0 0 8px;overflow-wrap:anywhere;color:#272733}
-.creative-meta{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
-.log{max-height:600px;overflow:auto;background:#191a24;color:#d9e3f7;padding:15px;border-radius:12px;border:1px solid var(--line)}
-.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
-.html-frame{width:100%;height:650px;border:1px solid var(--line);background:white;border-radius:12px}
-.notice{border:1px solid #e8e4fa;background:#f8f6ff;border-radius:14px;padding:13px 15px;color:#6751a9;margin-bottom:16px;font-size:11px;line-height:1.7}
-.error-text{color:var(--red)}
-.right{text-align:right}
-.footnote{font-size:11px;color:var(--muted);margin-top:16px}
-.joblist{display:flex;flex-direction:column;gap:11px}
-.job{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(90px,.6fr) minmax(90px,.6fr) auto;gap:14px;align-items:center;padding:16px 18px;background:#fff;border:1px solid var(--line);border-radius:15px;box-shadow:0 4px 18px #28274204}
-.jobname{display:flex;align-items:center;gap:11px;min-width:0}
-.jobicon{width:36px;height:36px;display:grid;place-items:center;border-radius:12px;background:#f0edfd;color:#8065d8;flex-shrink:0}
-.jobicon svg{width:16px;height:16px}
-.jobname strong{display:block;font-size:12px;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.jobname span,.jobmeta span{font-size:10px;color:#8b94a0}
-.jobmeta strong{display:block;font-size:11px;margin-bottom:3px}
-@media(max-width:1050px){.summary,.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.creative-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.job{grid-template-columns:minmax(0,1fr) auto}.jobmeta{display:none}}
-@media(max-width:720px){.shell{grid-template-columns:1fr}aside.sidebar{display:none!important}.topbar{padding:0 18px}.content{padding:22px 16px 35px}.headline{flex-direction:column;align-items:stretch}.summary,.grid{gap:9px}.metric,.stat{padding:15px}.metric .value,.statvalue{font-size:22px}.creative-grid,.formgrid,.detail-grid{grid-template-columns:1fr}.h1{font-size:22px}.job{grid-template-columns:1fr;gap:10px}}
-
-/* Библиотека креативов — живой поиск/фильтры/закладки/сохранённые
-   поиски, см. ad-intelligence.html (фаза 2, 2026-11-03) */
-.librarycontrols{background:#fff;border:1px solid var(--line);border-radius:21px;padding:17px 18px 14px;margin-bottom:24px;box-shadow:0 5px 20px #2b294a04}
-.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:13px}
-.search{flex:1;min-width:230px;display:flex;align-items:center;gap:9px;padding:0 13px;background:#fff;border:1px solid var(--line);border-radius:12px;height:45px;color:#9294a3}
-.search svg{width:15px;height:15px;flex-shrink:0}
-.search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:#2b2c3a;font-size:12px}
-.filter{height:45px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:0 12px;color:#45465a;outline:none;font-size:11px}
-.quickfilters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.quickfilter{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;background:transparent;color:#858799;border-radius:10px;padding:9px 12px;font:600 10px "DM Sans",sans-serif;cursor:pointer;transition:all .18s}
-.quickfilter svg{width:13px;height:13px}
-.quickfilter:hover{background:#f7f6fc;color:#5e50a9}
-.quickfilter.active{background:#f0edff;color:#7158dc;border-color:#e6e0ff}
-.activefilters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid #f0f0f5;padding-top:13px;margin-top:13px}
-.activefilters[hidden]{display:none!important}
-.activefilterlabel{font-size:9px;color:#9a9baa}
-.filterchips{display:flex;gap:7px;flex-wrap:wrap;flex:1}
-.filterchip{display:inline-flex;align-items:center;gap:9px;border:1px solid #e8e4fa;background:#f8f6ff;border-radius:8px;padding:7px 9px;color:#7059cf;font-size:10px;cursor:pointer}
-.clearfilters{border:0;background:none;color:#858799;font:600 10px "DM Sans",sans-serif;cursor:pointer}
-.clearfilters:hover{color:#7158dc}
-.resulthead{display:flex;justify-content:space-between;align-items:center;gap:15px;margin:0 0 15px}
-.resulthead p{color:var(--muted);font-size:10px;margin:0}
-.resultactions{display:flex;gap:8px;flex-wrap:wrap}
-.creative .save{position:absolute;top:12px;right:12px;z-index:3;width:34px;height:34px;border:1px solid #e4e8ec;border-radius:10px;background:#ffffffed;color:#65707d;display:grid;place-items:center;cursor:pointer}
-.creative .save svg{width:15px;height:15px}
-.creative .save.saved{background:#e6f8ed;color:var(--green-dark);border-color:#ccebd7}
-.creative-preview{position:relative}
-.creative[hidden]{display:none!important}
-.savedsearches{margin:0 0 18px;padding:16px;background:#fafbfc;border:1px solid var(--line);border-radius:15px}
-.savedsearches[hidden]{display:none!important}
-.savedsearchhead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
-.savedsearchhead strong{font-size:12px;color:#303743}
-.savedsearchhead p{font-size:10px;color:#838b98;line-height:1.5;margin:4px 0 0}
-.savedsearchlist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.savedsearchitem{min-width:0;display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border:1px solid #e4e7ee;border-radius:12px}
-.savedsearchbody{min-width:0;flex:1}
-.savedsearchbody strong{display:block;font-size:11px;color:#303743;overflow-wrap:anywhere}
-.savedsearchbody span{display:block;font-size:10px;color:#858c99;line-height:1.5;margin-top:4px;overflow-wrap:anywhere}
-.savedsearchactions{display:flex;gap:5px;flex-shrink:0}
-.savedsearchactions button{width:31px;height:31px;border:1px solid #e6e8ee;border-radius:8px;background:#fff;color:#586273;display:grid;place-items:center;cursor:pointer}
-.savedsearchactions button svg{width:13px;height:13px}
-.savedsearchactions button[data-delete-saved-search]{color:#c0392b}
-.empty-filter{grid-column:1/-1;padding:55px 22px;text-align:center;border:1px dashed #dedbea;border-radius:22px;background:#fff}
-.empty-filter[hidden]{display:none!important}
-.empty-filter-icon{display:grid;place-items:center;width:52px;height:52px;margin:0 auto 15px;border-radius:17px;background:#f0edff;color:#8066e8}
-.empty-filter-icon svg{width:23px;height:23px}
-.empty-filter h3{font:800 17px Manrope,sans-serif;letter-spacing:-.04em;color:#2b2c39;margin:0 0 8px}
-.empty-filter p{font-size:11px;line-height:1.7;color:#8c8e9f;max-width:410px;margin:0 auto 18px}
-@media(max-width:760px){.librarycontrols{padding:13px;border-radius:18px}.toolbar{flex-wrap:wrap}.search{min-width:100%}.savedsearchlist{grid-template-columns:1fr}}
-
-/* Intent-picker — скоуп библиотеки к одному поисковому запросу (фаза 3,
-   2026-11-03), та же серверная стемминг/эмбеддинг-логика, что у
-   публичного /api/v1/creatives */
-.intentbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 18px;padding:14px 18px;background:#f8f6ff;border:1px solid #e8e4fa;border-radius:16px}
-.intentbar-left{display:flex;align-items:center;gap:12px;min-width:0}
-.intentbar-left>i{color:#7059cf;flex-shrink:0}
-.intentbar-copy{min-width:0}
-.intentbar-copy strong{display:block;font-size:13px;color:#2f2b4a;overflow-wrap:anywhere}
-.intentbar-copy span{display:block;font-size:10px;color:#8178a8;margin-top:2px}
-.intentbar-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.intentpicker{position:relative;margin:-6px 0 18px;padding:16px 18px;background:#fff;border:1px solid #e8e4fa;border-radius:16px;box-shadow:0 10px 30px #2b294a0f}
-.intentpicker[hidden]{display:none!important}
-.intentpicker-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
-.intentpicker-head strong{font-size:12px;color:#303743}
-.intentpicker-close{border:0;background:none;color:#9a9baa;cursor:pointer;font-size:16px;line-height:1}
-.intentpicker-search{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;font-size:12px;margin-bottom:10px;box-sizing:border-box}
-.intentpicker-list{max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
-.intentrow{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;cursor:pointer}
-.intentrow:hover{background:#f8f6ff}
-.intentrow-copy{min-width:0;flex:1;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-.intentrow-copy strong{font-size:12px;color:#2f2b4a;overflow-wrap:anywhere}
-.intentrow-copy span{font-size:10px;color:#9a9baa;flex-shrink:0;white-space:nowrap}
-.intentpicker-foot{display:flex;justify-content:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid #f1eefc}
-"""
-
-
-if not ADMIN_PASSWORD:
-    raise RuntimeError("PARSYA_ADMIN_PASSWORD must be set in the environment.")
 if len(SECRET_KEY) < 32:
     raise RuntimeError("PARSYA_SECRET_KEY must be a random value of at least 32 characters.")
 if len(WORKER_TOKEN) < 32:
@@ -385,13 +207,22 @@ _INTENT_STOPWORDS = {
 }
 
 
+_STEMMER_LOCK = threading.Lock()
+
+
 def _intent_stems(key_text: str) -> set[str]:
     words = re.findall(r"[a-zа-яё]+", (key_text or "").lower())
     stems = set()
     for word in words:
         if len(word) < 4 or word in _INTENT_STOPWORDS:
             continue
-        stem = _RU_STEMMER.stemWord(word)
+        # Snowball-стеммер не потокобезопасен: параллельные запросы портили его состояние
+        # (IndexError в stemWord → 500 на /runs и /creatives), поэтому под блокировкой.
+        with _STEMMER_LOCK:
+            try:
+                stem = _RU_STEMMER.stemWord(word)
+            except Exception:
+                stem = word[:6]
         if len(stem) >= 3:
             stems.add(stem)
     return stems
@@ -438,7 +269,30 @@ def _get_cached_intent_embedding(db: sqlite3.Connection, key_text: str) -> list[
     return emb.unpack_embedding(row["embedding"]) if row else None
 
 
+_SEMANTIC_IDS_CACHE: dict[tuple, tuple[float, set[int] | None]] = {}
+_SEMANTIC_IDS_LOCK = threading.Lock()
+
+
 def _semantic_relevant_creative_ids(db: sqlite3.Connection, intents: list[str]) -> set[int] | None:
+    """Кеш поверх _semantic_relevant_creative_ids_uncached: подбор по смыслу перебирает все
+    embedding'и (≈5 с), а экран аналитики шлёт десяток запросов с одним набором ключевых слов —
+    считаем один раз (остальные ждут под блокировкой) и держим результат 2 минуты."""
+    cache_key = tuple(sorted(str(i).strip().lower() for i in intents))
+    cached = _SEMANTIC_IDS_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < 120:
+        return cached[1]
+    with _SEMANTIC_IDS_LOCK:
+        cached = _SEMANTIC_IDS_CACHE.get(cache_key)
+        if cached and time.time() - cached[0] < 120:
+            return cached[1]
+        result = _semantic_relevant_creative_ids_uncached(db, intents)
+        if len(_SEMANTIC_IDS_CACHE) > 200:
+            _SEMANTIC_IDS_CACHE.clear()
+        _SEMANTIC_IDS_CACHE[cache_key] = (time.time(), result)
+        return result
+
+
+def _semantic_relevant_creative_ids_uncached(db: sqlite3.Connection, intents: list[str]) -> set[int] | None:
     """Creative ids considered relevant to the active intent(s) (averaged embedding if
     several are selected), via TWO signals: (1) cosine similarity of a real Gemini
     embedding ≥ SEMANTIC_INTENT_THRESHOLD, or (2) the creative's own title+description
@@ -676,6 +530,7 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_occurrences_job ON occurrences(job_id);
         CREATE INDEX IF NOT EXISTS ix_occurrences_platform ON occurrences(platform);
+        CREATE INDEX IF NOT EXISTS ix_occurrences_creative ON occurrences(creative_id);
         CREATE TABLE IF NOT EXISTS site_results (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           job_id INTEGER NOT NULL,
@@ -884,10 +739,9 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS ix_ci_creative ON creative_identifiers(creative_id);
         CREATE INDEX IF NOT EXISTS ix_ci_value ON creative_identifiers(identifier_type, identifier_value);
 
-        -- Marketer-facing SaaS accounts. Separate from the single env-configured
-        -- PARSYA_ADMIN_USER/PASSWORD above, which remains the ops console login and is
-        -- untouched by this table. An admin-role row here manages these accounts from
-        -- /admin/users; it does not grant access to the ops console itself.
+        -- Учётки ЛК — единственный вход в систему (старая консоль /login с PARSYA_ADMIN_USER/PASSWORD
+        -- удалена 23.11.2026). role: superuser (создатель, + вкладка «Консоль»), admin (вся база), marketer.
+        -- Управление пользователями — ЛК → Консоль (app/console.py).
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           email TEXT NOT NULL UNIQUE,
@@ -951,6 +805,40 @@ def init_db() -> None:
             if col not in existing_cols:
                 db.execute(f"ALTER TABLE creatives ADD COLUMN {col} {coltype}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_carousel ON creatives(carousel_id)")
+        # Состав каруселей (17.11.2026): слайды приходят от парсера отдельно от креативов, потому что
+        # одно объявление бывает в нескольких каруселях, а creatives.carousel_id хранит только одну.
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS carousel_slides (
+              carousel_id TEXT NOT NULL, slide_index INTEGER NOT NULL,
+              job_id INTEGER, total INTEGER, visible INTEGER,
+              title TEXT, description TEXT, domain TEXT, image_url TEXT,
+              page_url TEXT, platform TEXT, creative_id INTEGER, observed_at TEXT NOT NULL,
+              PRIMARY KEY (carousel_id, slide_index))"""
+        )
+        # Галерея одного объявления: несколько картинок в том порядке, как в рекламе.
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS creative_galleries (
+              gallery_key TEXT PRIMARY KEY, job_id INTEGER, creative_id INTEGER,
+              title TEXT, description TEXT, domain TEXT, images_json TEXT NOT NULL,
+              total INTEGER, visible INTEGER, platform TEXT, page_url TEXT, observed_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creative_galleries_job ON creative_galleries(job_id)")
+        # Показы объявления за запуск (18.11.2026): парсер считает повторы, которые раньше отбрасывал,
+        # и лучшее место в ленте за проход (1 = первое объявление прохода). Пока только Дзен.
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS creative_impressions (
+              job_id INTEGER NOT NULL, creative_hash TEXT NOT NULL,
+              impressions INTEGER NOT NULL DEFAULT 0, best_pos INTEGER, passes INTEGER,
+              updated_at TEXT NOT NULL, PRIMARY KEY (job_id, creative_hash))"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creative_impressions_hash ON creative_impressions(creative_hash)")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_carousel_slides_job ON carousel_slides(job_id)")
+        # Дополнительные поля объявления из сохранённой разметки (17.11.2026), см. app/creative_fields.py
+        from app import creative_fields as _cf
+        db.execute(_cf.SCHEMA)
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creative_details_ad ON creative_details(ad_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creative_details_campaign ON creative_details(direct_campaign_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_carousel_slides_creative ON carousel_slides(creative_id)")
         # owner_user_id lets a SaaS user (see `users`) self-serve: launch their own runs from
         # the frontend and only ever see their own jobs. NULL means an ops-console run created
         # from the admin HTML pages, not tied to any SaaS account.
@@ -1022,6 +910,39 @@ def init_schedules() -> None:
           finished_at TEXT
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS ix_sched_status_next ON scan_schedules(status, next_run_at)")
+        # Пост VK, в котором найдена реклама: дата публикации, сообщество, статистика (parsya_vk_harvester.py)
+        db.execute("""CREATE TABLE IF NOT EXISTS vk_posts (
+          creative_id INTEGER PRIMARY KEY REFERENCES creatives(id) ON DELETE CASCADE,
+          format TEXT, post_key TEXT, owner_id INTEGER, owner_name TEXT, owner_screen_name TEXT,
+          owner_members INTEGER, post_url TEXT, posted_at TEXT,
+          views INTEGER, likes INTEGER, reposts INTEGER, comments INTEGER,
+          first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+        )""")
+        # Сообщества VK — площадки «Рекламы от автора»: откуда реклама и когда проверяли стену
+        db.execute("""CREATE TABLE IF NOT EXISTS vk_communities (
+          owner_id INTEGER PRIMARY KEY, name TEXT, screen_name TEXT, members INTEGER,
+          monitor INTEGER NOT NULL DEFAULT 1, ads_found INTEGER NOT NULL DEFAULT 0,
+          posts_checked INTEGER NOT NULL DEFAULT 0, first_ad_at TEXT, last_ad_at TEXT,
+          last_checked_at TEXT, last_error TEXT, added_at TEXT NOT NULL, source TEXT
+        )""")
+        vk_cols = {r["name"] for r in db.execute("PRAGMA table_info(vk_communities)").fetchall()}
+        for col, typ in (("feed_posts", "INTEGER NOT NULL DEFAULT 0"), ("feed_days", "REAL NOT NULL DEFAULT 0"),
+                         ("feed_ads", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in vk_cols:  # лента с прошлой проверки: частота постов и доля рекламы
+                db.execute(f"ALTER TABLE vk_communities ADD COLUMN {col} {typ}")
+        db.execute("""CREATE TABLE IF NOT EXISTS vk_groups (
+          owner_id INTEGER PRIMARY KEY, name TEXT, screen_name TEXT, members INTEGER, activity TEXT, city TEXT,
+          verified INTEGER, site TEXT, description TEXT, type TEXT, is_closed INTEGER, first_seen_at TEXT, updated_at TEXT
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS vk_group_results (
+          job_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, rank INTEGER, PRIMARY KEY(job_id, owner_id)
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS vk_discover (
+          query TEXT PRIMARY KEY, next_offset INTEGER NOT NULL DEFAULT 0, total INTEGER,
+          added INTEGER NOT NULL DEFAULT 0, last_run_at TEXT, done INTEGER NOT NULL DEFAULT 0
+        )""")
+        if "source" not in {r["name"] for r in db.execute("PRAGMA table_info(scan_schedules)").fetchall()}:
+            db.execute("ALTER TABLE scan_schedules ADD COLUMN source TEXT NOT NULL DEFAULT 'yandex'")
         job_cols = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
         if "schedule_id" not in job_cols:
             db.execute("ALTER TABLE jobs ADD COLUMN schedule_id INTEGER")
@@ -1029,6 +950,8 @@ def init_schedules() -> None:
             db.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         if "retry_at" not in job_cols:
             db.execute("ALTER TABLE jobs ADD COLUMN retry_at TEXT")
+        if "variant" not in job_cols:  # вариант теста «набивка профиля» (см. INTENT_TEST.md)
+            db.execute("ALTER TABLE jobs ADD COLUMN variant TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS ix_jobs_schedule ON jobs(schedule_id)")
         db.commit()
 
@@ -1057,8 +980,9 @@ def _sched_tick() -> None:
                 skipped += 1
             else:
                 db.execute(
-                    "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id,schedule_id) VALUES('queued',?,?,?,?,?)",
-                    (sc["city"], sc["key_text"], now_iso(), sc["owner_user_id"], sc["id"]),
+                    "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id,schedule_id,variant) VALUES('queued',?,?,?,?,?,?)",
+                    (sc["city"], sc["key_text"], now_iso(), sc["owner_user_id"], sc["id"],
+                     sc["source"] if "source" in sc.keys() and sc["source"] in ("vk", "vk+feed") else None),
                 )
                 created += 1
             nxt = planned + interval
@@ -1078,8 +1002,41 @@ def _sched_tick() -> None:
         db.commit()
 
 
+VK_WALLS_HOURS = float(os.getenv("PARSYA_VK_WALLS_HOURS", "6"))
+
+
+def _vk_walls_tick() -> None:
+    """Раз в PARSYA_VK_WALLS_HOURS ставит задание «обход стен VK»: стены сообществ, где уже
+    находили «Рекламу от автора» (vk_communities). 0 — выключено."""
+    if VK_WALLS_HOURS <= 0:
+        return
+    with closing(connect()) as db:
+        try:
+            n = db.execute("SELECT COUNT(*) FROM vk_communities WHERE monitor=1").fetchone()[0]
+        except sqlite3.OperationalError:
+            return
+        if not n:
+            return
+        if db.execute("SELECT 1 FROM jobs WHERE variant='vk-walls' AND status IN ('queued','running') LIMIT 1").fetchone():
+            return
+        last = db.execute("SELECT MAX(created_at) FROM jobs WHERE variant='vk-walls'").fetchone()[0]
+        if last:
+            try:
+                if datetime.now(timezone.utc) - datetime.fromisoformat(last) < timedelta(hours=VK_WALLS_HOURS):
+                    return
+            except Exception:
+                pass
+        db.execute("INSERT INTO jobs(status,city,key_text,created_at,variant) VALUES('queued','Вся Россия','Мониторинг стен VK',?,'vk-walls')",
+                   (now_iso(),))
+        db.commit()
+
+
 def _scheduler_loop() -> None:
     while True:
+        try:
+            _vk_walls_tick()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[scheduler] vk-walls: {exc}", flush=True)
         try:
             _sched_tick()
         except Exception as exc:  # noqa: BLE001 - фоновый цикл не должен падать
@@ -1090,6 +1047,88 @@ def _scheduler_loop() -> None:
 threading.Thread(target=_scheduler_loop, daemon=True, name="scan-scheduler").start()
 
 
+def _video_duration_tick(limit: int = 25) -> int:
+    """Заполняет длительность рекламных видео по самому файлу: в разметке её нет.
+    '0' = определить не удалось (чтобы не опрашивать ссылку бесконечно)."""
+    from app.video_duration import probe_duration
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT id, video_src FROM creatives WHERE COALESCE(video_src,'')<>'' "
+            "AND COALESCE(video_duration,'')='' ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    done = 0
+    for row in rows:
+        seconds = probe_duration(row["video_src"])
+        value = (str(int(seconds)) if seconds and float(seconds).is_integer() else str(seconds)) if seconds else "0"
+        with closing(connect()) as db:
+            db.execute("UPDATE creatives SET video_duration=? WHERE id=? AND COALESCE(video_duration,'')=''", (value, row["id"]))
+            db.commit()
+        done += 1
+    return done
+
+
+def _video_duration_loop() -> None:
+    time.sleep(20)
+    while True:
+        try:
+            n = _video_duration_tick()
+        except Exception as exc:  # noqa: BLE001 - фоновый цикл не должен падать
+            print(f"[video-duration] error: {exc}", flush=True)
+            n = 0
+        time.sleep(3 if n else 120)
+
+
+threading.Thread(target=_video_duration_loop, daemon=True, name="video-duration").start()
+
+
+def _creative_details_loop() -> None:
+    """Разбирает разметку объявлений в creative_details: новые объявления и, после смены
+    FIELDS_VERSION, всю базу заново. Пачками, чтобы не держать базу."""
+    from app import creative_fields as cf
+    time.sleep(25)
+    while True:
+        try:
+            with closing(connect()) as db:
+                n = cf.process_pending(db, now_iso(), batch=200)
+        except Exception as exc:  # noqa: BLE001 - фоновый цикл не должен падать
+            print(f"[creative-details] error: {exc}", flush=True)
+            n = 0
+        time.sleep(1 if n else 60)
+
+
+threading.Thread(target=_creative_details_loop, daemon=True, name="creative-details").start()
+
+
+_DETAIL_JSON = ("callouts_json", "sitelinks_json", "offers_json")
+
+
+def _creative_details(db: sqlite3.Connection, creative_id: int) -> dict[str, Any] | None:
+    row = db.execute("SELECT * FROM creative_details WHERE creative_id=?", (creative_id,)).fetchone()
+    if not row:
+        return None
+    out: dict[str, Any] = {}
+    for k in row.keys():
+        if k in ("creative_id", "version", "extracted_at"):
+            continue
+        v = row[k]
+        if k in _DETAIL_JSON:
+            try:
+                v = json.loads(v) if v else []
+            except ValueError:
+                v = []
+            k = k[:-5]
+        out[k] = v
+    out["is_social"] = bool(out.get("is_social"))
+    # срок жизни объявления по номеру РСЯ: все копии с тем же ad_id
+    if out.get("ad_id"):
+        life = db.execute(
+            "SELECT MIN(o.observed_at), MAX(o.observed_at), COUNT(DISTINCT o.job_id) FROM creative_details d "
+            "JOIN occurrences o ON o.creative_id=d.creative_id WHERE d.ad_id=?", (out["ad_id"],)
+        ).fetchone()
+        out["ad_id_first_seen"], out["ad_id_last_seen"], out["ad_id_runs"] = life[0], life[1], life[2]
+    return out
+
+
 # --- Интент креатива (Gemini), 2026-11-13 ---------------------------------------
 # creatives.ai_intent — о чём реклама НА САМОМ ДЕЛЕ (определяет Gemini по заголовку и
 # тексту). Не путать с ключевым словом запуска (jobs.key_text) — по какому запросу
@@ -1097,10 +1136,13 @@ threading.Thread(target=_scheduler_loop, daemon=True, name="scan-scheduler").sta
 def init_ai_intent() -> None:
     with closing(connect()) as db:
         cols = {row["name"] for row in db.execute("PRAGMA table_info(creatives)").fetchall()}
-        for col, typ in (("ai_intent", "TEXT"), ("ai_intent_at", "TEXT"), ("ai_intent_model", "TEXT")):
+        for col, typ in (("ai_intent", "TEXT"), ("ai_intent_at", "TEXT"), ("ai_intent_model", "TEXT"),
+                         # таксономия (2026-11-23): основной интент (раздел) → под-интент (подрубрика), app/taxonomy
+                         ("ai_intent_main", "TEXT"), ("ai_intent_sub", "TEXT"), ("ai_taxonomy_model", "TEXT"), ("ai_taxonomy_at", "TEXT")):
             if col not in cols:
                 db.execute(f"ALTER TABLE creatives ADD COLUMN {col} {typ}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_ai_intent ON creatives(ai_intent)")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_creatives_ai_intent_main ON creatives(ai_intent_main, ai_intent_sub)")
         # Решения Gemini «подходит ли интент креатива под ключевое слово запуска» (кэш пар).
         db.execute("""CREATE TABLE IF NOT EXISTS intent_keyword_match (
           keyword_key TEXT NOT NULL, intent_key TEXT NOT NULL, match INTEGER NOT NULL,
@@ -1168,18 +1210,38 @@ def _judge_pending_matches() -> bool:
         return True
 
 
+def _fill_taxonomy_by_rules(limit: int = 500) -> bool:
+    """Креативы, у которых интент уже есть, а раздела/подрубрики нет (размечены до 23.11 или без текста),
+    раскладываем правилами app/taxonomy — без Gemini."""
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT id,title,description,cta_text,ai_intent,destination_url FROM creatives "
+            "WHERE ai_intent IS NOT NULL AND ai_intent_main IS NULL LIMIT ?", (limit,)).fetchall()
+        if not rows:
+            return False
+        stamp = now_iso()
+        for r in rows:
+            mn, sb, _how = taxonomy.classify(r["title"], r["description"], r["cta_text"], r["ai_intent"], r["destination_url"])
+            db.execute("UPDATE creatives SET ai_intent_main=?, ai_intent_sub=?, ai_taxonomy_model=?, ai_taxonomy_at=? WHERE id=?",
+                       (mn, sb, taxonomy.VERSION, stamp, r["id"]))
+        db.commit()
+        return True
+
+
 def _process_ai_intent_batch() -> bool:
     """Один шаг фонового цикла: до BATCH_SIZE неразмеченных креативов (новые первыми) — один
     запрос к Gemini на пачку. True, если что-то обработали. При сбое пачки пробуем по одному;
     креатив, который 3 раза подряд не размечается, до перезапуска сервиса пропускаем.
     Сначала — оценка пар «ключевое слово → интент» (их мало, а от них зависят цифры «по интенту»)."""
+    if _fill_taxonomy_by_rules():
+        return True
     if _judge_pending_matches():
         return True
     with closing(connect()) as db:
         skip = [i for i, n in _ai_intent_fail_counts.items() if n >= 3]
         skip_sql = f" AND id NOT IN ({','.join('?' * len(skip))})" if skip else ""
         rows = db.execute(
-            "SELECT id,title,description FROM creatives WHERE ai_intent IS NULL"
+            "SELECT id,title,description,cta_text,destination_url FROM creatives WHERE ai_intent IS NULL"
             + skip_sql + " ORDER BY id DESC LIMIT ?", skip + [aii.BATCH_SIZE],
         ).fetchall()
         if not rows:
@@ -1188,20 +1250,31 @@ def _process_ai_intent_batch() -> bool:
             "SELECT ai_intent FROM creatives WHERE ai_intent IS NOT NULL AND ai_intent<>? "
             "GROUP BY ai_intent ORDER BY COUNT(*) DESC LIMIT ?", (aii.UNKNOWN, aii.MAX_KNOWN)).fetchall()]
         items = [dict(r) for r in rows]
-        result = aii.classify_batch(items, known, on_hard_failure=_gemini_alert)
+        result = aii.classify_batch([{"id": it["id"], "title": it["title"], "description": it["description"]} for it in items],
+                                    known, on_hard_failure=_gemini_alert)
         if result is None and len(items) > 1:
             result = {}
             for it in items:
-                one = aii.classify_batch([it], known, on_hard_failure=None)
+                one = aii.classify_batch([{"id": it["id"], "title": it["title"], "description": it["description"]}],
+                                         known, on_hard_failure=None)
                 if one:
                     result.update(one)
         result = result or {}
         now = now_iso()
         for it in items:
-            intent = result.get(it["id"])
+            val = result.get(it["id"])
+            intent, mn, sb = (val, None, None) if isinstance(val, str) else (val or (None, None, None))
             if intent:
-                db.execute("UPDATE creatives SET ai_intent=?, ai_intent_at=?, ai_intent_model=? WHERE id=?",
-                           (intent, now, aii.last_model_used, it["id"]))
+                tax_model = aii.last_model_used
+                pair = taxonomy.validate(mn, sb) if mn else None  # только точные названия таксономии
+                mn, sb = pair if pair else (None, None)
+                if not (mn and sb):  # Gemini не дал раздел из таксономии — раскладываем правилами
+                    mn, sb, _how = taxonomy.classify(it.get("title"), it.get("description"), it.get("cta_text"),
+                                                     intent, it.get("destination_url"))
+                    tax_model = taxonomy.VERSION
+                db.execute("UPDATE creatives SET ai_intent=?, ai_intent_at=?, ai_intent_model=?, "
+                           "ai_intent_main=?, ai_intent_sub=?, ai_taxonomy_model=?, ai_taxonomy_at=? WHERE id=?",
+                           (intent, now, aii.last_model_used, mn, sb, tax_model, now, it["id"]))
                 _ai_intent_fail_counts.pop(it["id"], None)
             else:
                 _ai_intent_fail_counts[it["id"]] = _ai_intent_fail_counts.get(it["id"], 0) + 1
@@ -1229,89 +1302,6 @@ def esc(value: Any) -> str:
     text = "" if value is None else str(value)
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;").replace("'", "&#39;"))
-
-
-def auth_page(request: Request) -> bool:
-    if request.session.get("authenticated"):
-        return True
-    # Auto-login when reached via addAvto's own proxy: that route sits
-    # behind addAvto's Basic Auth (same login/password), so getting here
-    # at all already proves the visitor authenticated there — showing
-    # this app's OWN separate login screen on top would just be a second,
-    # confusing password prompt for no real security gain (2026-11-03,
-    # Dima: "авторизация по сути не нужна"). SAFE only because
-    # nginx-parser.conf (this app's native domain) always overwrites
-    # X-Forwarded-Prefix to empty — a client can't forge this header to
-    # self-authenticate there directly.
-    if P():
-        request.session["authenticated"] = True
-        request.session["username"] = "addavto"
-        request.session.setdefault("csrf", secrets.token_urlsafe(32))
-        return True
-    return False
-
-
-def require_admin(request: Request) -> None:
-    if not auth_page(request):
-        raise HTTPException(status_code=303, headers={"Location": P("/login")})
-
-
-def csrf_token(request: Request) -> str:
-    token = request.session.get("csrf")
-    if not token:
-        token = secrets.token_urlsafe(32)
-        request.session["csrf"] = token
-    return str(token)
-
-
-def check_csrf(request: Request, token: str) -> None:
-    expected = str(request.session.get("csrf") or "")
-    if not expected or not hmac.compare_digest(expected, token):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-
-def page(request: Request, title: str, body: str, active: str = "") -> HTMLResponse:
-    user = request.session.get("username", "admin")
-    nav = ""
-    if auth_page(request):
-        links = [
-            ("/dashboard", "Обзор", "dashboard", "layout-grid"),
-            ("/runs", "Запуски", "runs", "radar"),
-            ("/creatives", "Креативы", "creatives", "layers"),
-            ("/advertisers", "Рекламодатели", "advertisers", "building-2"),
-            ("/new-run", "Новый запуск", "new-run", "plus"),
-            ("/admin/users", "Пользователи SaaS", "users", "users"),
-        ]
-        nav = '<aside class="sidebar"><div class="brand"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><nav>'
-        # Открыто как вкладка внутри addAvto (/parser/...) — явная ссылка
-        # назад, как у "Конверсии в Метрику" (lk.html: "← Рекламные
-        # кампании"), а не только надежда на кнопку "назад" браузера.
-        if P():
-            nav += '<a class="nav-back" href="/">← Рекламные кампании</a>'
-        nav += "".join(
-            f'<a class="{ "active" if key == active else "" }" href="{P(href)}"><i data-lucide="{icon}"></i>{label}</a>'
-            for href, label, key, icon in links
-        )
-        nav += '</nav><div class="side-bottom"><span class="dot"></span> ' + esc(user) + '<form method="post" action="' + P("/logout") + '"><input type="hidden" name="csrf_token" value="' + esc(csrf_token(request)) + '"><button class="logout">Выйти</button></form></div></aside>'
-    crumb_label = next((label for _, label, key in [("", "Обзор", "dashboard"), ("", "Запуски", "runs"), ("", "Креативы", "creatives"), ("", "Новый запуск", "new-run"), ("", "Пользователи SaaS", "users")] if key == active), title)
-    html = f"""<!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{esc(title)} · ParsYa</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lucide@latest"></script>
-<style>
-{DESIGN_TOKENS_CSS}
-</style></head><body><div class="shell">{nav}<main class="main"><header class="topbar"><div style="display:flex;align-items:center;gap:12px"><div class="crumb">ParsYa <span style="margin:0 7px;color:#c5cad1">/</span><strong>{esc(crumb_label)}</strong></div></div><div class="top-actions"><div class="profiledot">{esc((user or "A")[0].upper())}</div></div></header><div class="content"><section class="headline"><div><div class="eyebrow">CONTROL PLANE</div><h1 class="h1">{esc(title)}</h1><div class="subtitle">Удалённое управление ParsYa · воркер подключается к серверу исходящим HTTPS</div></div>{'<a class="primary" href="' + P('/new-run') + '"><i data-lucide="plus"></i><span>Новый запуск</span></a>' if auth_page(request) and active != 'new-run' else ''}</section>{body}<div class="footnote">ParsYa Control Plane · HTML креативов отображается в изолированном iframe без выполнения скриптов.</div></div></main></div>
-<script>if(window.lucide)lucide.createIcons();</script>
-</body></html>"""
-    return HTMLResponse(html)
-
-
-def admin_or_redirect(request: Request):
-    if not auth_page(request):
-        return RedirectResponse(P("/login"), status_code=303)
-    return None
 
 
 def worker_auth(authorization: str | None) -> None:
@@ -1465,6 +1455,61 @@ class CreativeExtrasIn(BaseModel):
     carousel_slide_index: int | None = None
 
 
+class CarouselSlideIn(BaseModel):
+    carousel_id: str = Field(min_length=5, max_length=40)
+    slide_index: int = Field(ge=0, le=200)
+    title: str = Field(default="", max_length=300)
+    description: str = Field(default="", max_length=800)
+    domain: str = Field(default="", max_length=200)
+    image_url: str = Field(default="", max_length=1000)
+    page_url: str = Field(default="", max_length=500)
+
+
+class GalleryIn(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=800)
+    domain: str = Field(default="", max_length=200)
+    images: list[str] = Field(min_length=2, max_length=20)
+    visible: int = Field(default=0, ge=0, le=20)
+    page_url: str = Field(default="", max_length=500)
+
+
+class ImpressionIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    impressions: int = Field(default=1, ge=0, le=100000)
+    best_pos: int | None = Field(default=None, ge=1, le=100000)
+    passes: int | None = Field(default=None, ge=0, le=1000)
+
+
+class VkMetaIn(BaseModel):
+    creative_hash: str = Field(min_length=1, max_length=128)
+    format: str = Field(default="", max_length=8)
+    post_key: str = Field(default="", max_length=64)
+    owner_id: int | None = None
+    owner_name: str = Field(default="", max_length=300)
+    owner_screen_name: str = Field(default="", max_length=200)
+    owner_members: int | None = None
+    post_url: str = Field(default="", max_length=500)
+    posted_at: str = Field(default="", max_length=40)
+    views: int | None = None
+    likes: int | None = None
+    reposts: int | None = None
+    comments: int | None = None
+
+
+class VkMetaBatch(BaseModel):
+    items: list[VkMetaIn] = Field(default_factory=list, max_length=500)
+
+
+class ImpressionsBatch(BaseModel):
+    items: list[ImpressionIn] = Field(default_factory=list, max_length=2000)
+
+
+class CarouselSlidesBatch(BaseModel):
+    slides: list[CarouselSlideIn] = Field(default_factory=list, max_length=400)
+    galleries: list[GalleryIn] = Field(default_factory=list, max_length=200)
+
+
 class CreativeExtrasBatch(BaseModel):
     extras: list[CreativeExtrasIn] = Field(max_length=200)
 
@@ -1608,9 +1653,17 @@ class NotificationPrefsIn(BaseModel):
     prefs: dict[str, bool] = Field(default_factory=dict)
 
 
+def _job_source(variant: str | None) -> str:
+    """Источник запуска для ЛК: vk / vk+feed / yandex (варианты тестов набивки — это тоже yandex)."""
+    base = (variant or "").split("#")[0]
+    return base if base in ("vk", "vk+feed") else "yandex"
+
+
 class RunCreateIn(BaseModel):
     city: str = Field(min_length=1, max_length=100)
     key_text: str = Field(min_length=1, max_length=300)
+    # Источник: yandex (обычный парсер РСЯ/Дзен), vk (реклама в поиске VK), vk+feed (поиск + лента VK).
+    source: str = Field(default="yandex", pattern="^(yandex|vk|vk\\+feed)$")
 
 
 class BrowserStateIn(BaseModel):
@@ -1665,677 +1718,40 @@ def health():
     return {"status": "ok", "service": "parsya-control-plane"}
 
 
-@app.get("/login", response_class=HTMLResponse)
-def login_get(request: Request, error: str = ""):
-    if auth_page(request):
-        return RedirectResponse(P("/dashboard"), status_code=303)
-    body = f"""<div style="max-width:440px;margin:8vh auto" class="panel"><div class="brand" style="padding:0 0 20px"><span class="brand-mark">P</span><div><b>ParsYa</b><small>CONTROL PLANE</small></div></div><p class="muted">Войдите в панель управления парсером.</p>{'<div class="notice error-text">'+esc(error)+'</div>' if error else ''}<form method="post" action="{P('/login')}"><input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}"><div class="field"><label>Логин</label><input name="username" required autocomplete="username"></div><div class="field"><label>Пароль</label><input type="password" name="password" required autocomplete="current-password"></div><button class="btn" style="width:100%">Войти</button></form></div>"""
-    # Login page has no sidebar.
-    return HTMLResponse(page(request, "Вход", body).body.decode("utf-8").replace('<div class="app"><main>', '<div class="app"><main>'))
+# Старая серверная консоль (/login, /dashboard, /runs, /admin/users …) удалена 23.11.2026: работаем только в ЛК.
+# Её функции — во вкладке «Консоль» ЛК (роль superuser, app/console.py). Старые адреса (в т.ч. пункт «Парсер»
+# в сайдбаре addAvto через /parser/) ведут в ЛК.
+LK_URL = os.getenv("PARSYA_LK_URL", "https://xn--80ak2afbe.xn--b1ajdba5acbodeeeaj1qb.xn--p1ai/app/ad-intelligence.html").rstrip("/")
 
 
-@app.post("/login")
-def login_post(
-    request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    csrf_token_value: str = Form(..., alias="csrf_token"),
-):
-    check_csrf(request, csrf_token_value)
-    # hmac.compare_digest() raises TypeError on non-ASCII str input (seen
-    # live 2026-11-03: a non-Latin login attempt 500'd instead of just
-    # failing auth) — bytes comparison has no such restriction.
-    if (
-        hmac.compare_digest(username.encode("utf-8"), ADMIN_USER.encode("utf-8"))
-        and hmac.compare_digest(password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8"))
-    ):
-        request.session.clear()
-        request.session["authenticated"] = True
-        request.session["username"] = username
-        request.session["csrf"] = secrets.token_urlsafe(32)
-        return RedirectResponse(P("/dashboard"), status_code=303)
-    return RedirectResponse(P("/login") + "?error=" + ("Неверный%20логин%20или%20пароль"), status_code=303)
-
-
-@app.post("/logout")
-def logout(request: Request, csrf_token_value: str = Form(..., alias="csrf_token")):
-    check_csrf(request, csrf_token_value)
-    request.session.clear()
-    return RedirectResponse(P("/login"), status_code=303)
+def _to_lk(view: str = "console-overview") -> RedirectResponse:
+    return RedirectResponse(f"{LK_URL}#{view}", status_code=303)
 
 
 @app.get("/")
-def root(request: Request):
-    return RedirectResponse(P("/dashboard") if auth_page(request) else P("/login"), status_code=303)
+def root():
+    return _to_lk("intel-library")
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    with closing(connect()) as db:
-        jobs = db.execute("SELECT COUNT(*) n FROM jobs").fetchone()["n"]
-        active = db.execute("SELECT COUNT(*) n FROM jobs WHERE status IN ('queued','running')").fetchone()["n"]
-        creatives = db.execute("SELECT COUNT(*) n FROM creatives").fetchone()["n"]
-        occurrences = db.execute("SELECT COUNT(*) n FROM occurrences").fetchone()["n"]
-        recent = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 8").fetchall()
-        worker_rows = db.execute("SELECT * FROM workers ORDER BY last_seen DESC").fetchall()
-        top_sites = db.execute("SELECT platform,COUNT(*) n FROM occurrences GROUP BY platform ORDER BY n DESC LIMIT 8").fetchall()
-    def badge(status: str) -> str:
-        return f'<span class="badge {esc(status)}">{esc(status)}</span>'
-    def job_icon(status: str) -> str:
-        lucide_name = {"running": "loader-circle", "queued": "clock", "failed": "circle-x"}.get(status, "circle-check")
-        return f'<span class="jobicon"><i data-lucide="{lucide_name}"></i></span>'
-    job_cards = "".join(
-        f'<div class="job"><div class="jobname">{job_icon(r["status"])}<div><strong>#{r["id"]} · {esc(r["key_text"])}</strong><span>{esc(r["city"])} · {esc(r["created_at"])}</span></div></div>'
-        f'<div class="jobmeta"><strong>{r["total_creatives"]}</strong><span>креативов</span></div>'
-        f'<div>{badge(r["status"])}</div>'
-        f'<a class="secondary" href="{P("/runs/")}{r["id"]}">Подробнее</a></div>'
-        for r in recent
-    ) or '<div class="empty"><strong>Запусков пока нет.</strong> Создайте первый запуск.</div>'
-    workers = "".join(f'<tr><td>{esc(w["worker_id"])}</td><td>{esc(w["hostname"])}</td><td>{badge(w["state"])}</td><td>{esc(w["last_seen"])}</td><td>{("#"+str(w["current_job_id"])) if w["current_job_id"] else "—"}</td></tr>' for w in worker_rows) or '<tr><td colspan="5" class="empty">Воркер ещё не подключался</td></tr>'
-    sites = "".join(f'<tr><td>{esc(s["platform"])}</td><td>{s["n"]}</td></tr>' for s in top_sites) or '<tr><td colspan="2" class="empty">Данные появятся после синхронизации</td></tr>'
-    body = f"""<div class="summary">
-<article class="stat"><div class="stathead">Всего запусков <span class="staticon"><i data-lucide="radar"></i></span></div><div class="statvalue">{jobs}</div><div class="statfoot">За всё время</div></article>
-<article class="stat"><div class="stathead">В очереди / выполняются <span class="staticon violet"><i data-lucide="loader-circle"></i></span></div><div class="statvalue">{active}</div><div class="statfoot">Незавершённые задания</div></article>
-<article class="stat"><div class="stathead">Уникальные креативы <span class="staticon gray"><i data-lucide="layers"></i></span></div><div class="statvalue">{creatives}</div><div class="statfoot">С сохранённым HTML при наличии</div></article>
-<article class="stat"><div class="stathead">Обнаружения <span class="staticon amber"><i data-lucide="scan-search"></i></span></div><div class="statvalue">{occurrences}</div><div class="statfoot">С учётом повторов в разных запусках</div></article>
-</div>
-<div class="panel"><div class="panel-head"><h2>Последние запуски</h2><a href="{P("/runs")}">Все запуски →</a></div><div class="joblist">{job_cards}</div></div>
-<div class="detail-grid"><div class="panel"><div class="panel-head"><h2>Состояние WSL-воркера</h2></div><div class="table-wrap"><table><thead><tr><th>Worker ID</th><th>Узел</th><th>Статус</th><th>Последний сигнал</th><th>Задание</th></tr></thead><tbody>{workers}</tbody></table></div></div><div class="panel"><div class="panel-head"><h2>Площадки по обнаружениям</h2><a href="{P("/creatives")}">Креативы →</a></div><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div></div>
-<div class="notice">Сервер не подключается к WSL напрямую. WSL-воркер сам опрашивает эту панель по HTTPS и забирает задания.</div>"""
-    return page(request, "Обзор", body, "dashboard")
+@app.get("/login")
+@app.get("/dashboard")
+@app.get("/admin/users")
+def old_console_pages():
+    return _to_lk("console-overview")
 
 
-@app.get("/new-run", response_class=HTMLResponse)
-def new_run_get(request: Request):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    body = f"""<div class="panel" style="max-width:850px"><h2>Параметры запуска</h2><p class="muted">Задание попадёт в очередь. WSL-воркер заберёт его при следующем опросе.</p><form method="post" action="{P('/new-run')}"><input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}"><div class="formgrid"><div class="field"><label>Город</label><input name="city" value="Екатеринбург" maxlength="100" required><div class="help">Используется существующей логикой парсера для выбора прокси.</div></div><div class="field"><label>Поисковый запрос / ключевая фраза</label><input name="key_text" value="увеличение пенсии" maxlength="300" required><div class="help">Например: «банкротство физических лиц».</div></div></div><div class="notice">В первой версии воркер выполняет только заранее заданный тип задания «запуск ParsYa». Произвольные команды оболочки через панель не передаются.</div><button class="btn">＋ Добавить в очередь</button> <a class="btn secondary" href="{P('/runs')}">Отмена</a></form></div>"""
-    return page(request, "Новый запуск", body, "new-run")
+@app.get("/runs")
+@app.get("/runs/{job_id}")
+@app.get("/new-run")
+def old_console_runs(job_id: int | None = None):
+    return _to_lk("intel-runs")
 
 
-@app.post("/new-run")
-def new_run_post(
-    request: Request,
-    city: str = Form(...),
-    key_text: str = Form(...),
-    csrf_token_value: str = Form(..., alias="csrf_token"),
-):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    check_csrf(request, csrf_token_value)
-    city, key_text = city.strip(), key_text.strip()
-    if not city or len(city) > 100 or not key_text or len(key_text) > 300:
-        raise HTTPException(status_code=400, detail="Проверьте город и ключевой запрос.")
-    with closing(connect()) as db:
-        cur = db.execute(
-            "INSERT INTO jobs(status,city,key_text,created_at) VALUES('queued',?,?,?)",
-            (city, key_text, now_iso()),
-        )
-        job_id = cur.lastrowid
-        db.commit()
-    return RedirectResponse(P(f"/runs/{job_id}"), status_code=303)
-
-
-@app.get("/runs", response_class=HTMLResponse)
-def runs_page(request: Request):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    with closing(connect()) as db:
-        rows_data = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 200").fetchall()
-    rows = "".join(f'<tr><td><a href="{P("/runs/")}{r["id"]}">#{r["id"]}</a></td><td>{esc(r["city"])}</td><td>{esc(r["key_text"])}</td><td><span class="badge {esc(r["status"])}">{esc(r["status"])}</span></td><td>{esc(r["worker_id"] or "—")}</td><td>{esc(r["created_at"])}</td><td>{esc(r["started_at"] or "—")}</td><td>{esc(r["finished_at"] or "—")}</td><td>{r["total_creatives"]}</td></tr>' for r in rows_data) or '<tr><td colspan="9" class="empty">Запусков пока нет</td></tr>'
-    body = f'<div class="panel"><div class="panel-head"><h2>История заданий</h2><a class="btn" href="{P("/new-run")}">＋ Создать запуск</a></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Город</th><th>Запрос</th><th>Статус</th><th>Воркер</th><th>Создан</th><th>Старт</th><th>Окончен</th><th>Креативы</th></tr></thead><tbody>{rows}</tbody></table></div></div>'
-    return page(request, "Запуски", body, "runs")
-
-
-@app.get("/runs/{job_id}", response_class=HTMLResponse)
-def run_detail(request: Request, job_id: int):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    with closing(connect()) as db:
-        job = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        occurrences = db.execute("SELECT o.platform,COUNT(*) n FROM occurrences o WHERE o.job_id=? GROUP BY o.platform ORDER BY n DESC", (job_id,)).fetchall()
-        site_results = db.execute("SELECT * FROM site_results WHERE job_id=? ORDER BY platform", (job_id,)).fetchall()
-    if not job:
-        raise HTTPException(status_code=404, detail="Запуск не найден")
-    sites = "".join(f'<tr><td>{esc(r["platform"])}</td><td>{r["n"]}</td></tr>' for r in occurrences) or '<tr><td colspan="2" class="empty">Воркер ещё не отправил креативы для этого запуска</td></tr>'
-    def site_badge(status: str) -> str:
-        return f'<span class="badge {esc(status)}">{esc(status)}</span>'
-    scan_rows = "".join(
-        f'<tr><td>{esc(s["platform"])}</td><td>{site_badge(s["status"])}</td><td>{s["unique_creatives"]}</td><td>{"да" if s["ad_signal_detected"] else "нет"}</td><td>{esc(s["duration_seconds"] or "—")}</td><td class="error-text">{esc(s["error_text"] or "—")}</td></tr>'
-        for s in site_results
-    ) or '<tr><td colspan="6" class="empty">Результаты по площадкам ещё не синхронизированы</td></tr>'
-    result = esc(job["result_json"] or "{}")
-    browser_panel = f"""<div class="panel" id="browserPanel" style="display:none">
-  <div class="panel-head"><h2>CAPTCHA — ручное решение</h2><span class="muted" id="browserUrl"></span></div>
-  <div style="position:relative;max-width:900px;border:1px solid var(--line);border-radius:10px;overflow:hidden;cursor:crosshair" id="browserScreenWrap">
-    <img id="browserScreen" class="remote-browser-screen" style="display:block;width:100%;max-height:65vh;object-fit:contain;background:#07101d" alt="Снимок браузера воркера">
-  </div>
-  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
-    <input id="browserText" placeholder="Текст для поля ввода" style="flex:1;min-width:200px">
-    <button type="button" class="btn secondary" id="browserSendText">Отправить текст</button>
-    <button type="button" class="btn secondary" id="browserEnter">Enter</button>
-    <button type="button" class="btn secondary" id="browserTab">Tab</button>
-    <button type="button" class="btn secondary" id="browserEsc">Esc</button>
-    <button type="button" class="btn secondary" id="browserRefresh">Обновить страницу воркера</button>
-  </div>
-  <p class="help">Кликните прямо по снимку — клик будет передан в реальный Chrome воркера по тем же координатам. Снимок обновляется примерно раз в секунду.</p>
-</div>
-<script>
-(function(){{
-  const jobId = {job_id};
-  const panel = document.getElementById('browserPanel');
-  const img = document.getElementById('browserScreen');
-  const urlLabel = document.getElementById('browserUrl');
-  async function sendCommand(command) {{
-    await fetch(`{P('')}/api/admin/jobs/${{jobId}}/browser/command`, {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(command),
-    }});
-  }}
-  async function poll() {{
-    try {{
-      const r = await fetch(`{P('')}/api/admin/jobs/${{jobId}}/browser/state`);
-      const data = await r.json();
-      if (data.active && data.captcha_required) {{
-        panel.style.display = '';
-        if (data.screenshot_b64) img.src = 'data:image/png;base64,' + data.screenshot_b64;
-        urlLabel.textContent = data.title || data.url || '';
-      }} else {{
-        panel.style.display = 'none';
-      }}
-    }} catch (e) {{}}
-    setTimeout(poll, 1200);
-  }}
-  document.getElementById('browserScreenWrap').addEventListener('click', (e) => {{
-    const rect = img.getBoundingClientRect();
-    const x_ratio = (e.clientX - rect.left) / rect.width;
-    const y_ratio = (e.clientY - rect.top) / rect.height;
-    sendCommand({{action: 'click', x_ratio, y_ratio}});
-  }});
-  document.getElementById('browserSendText').addEventListener('click', () => {{
-    const text = document.getElementById('browserText').value;
-    if (text) sendCommand({{action: 'text', text}});
-  }});
-  document.getElementById('browserEnter').addEventListener('click', () => sendCommand({{action: 'key', key: 'ENTER'}}));
-  document.getElementById('browserTab').addEventListener('click', () => sendCommand({{action: 'key', key: 'TAB'}}));
-  document.getElementById('browserEsc').addEventListener('click', () => sendCommand({{action: 'key', key: 'ESCAPE'}}));
-  document.getElementById('browserRefresh').addEventListener('click', () => sendCommand({{action: 'refresh'}}));
-  poll();
-}})();
-</script>"""
-    body = f"""<div class="grid"><div class="metric"><div class="label">Статус</div><div class="value" style="font-size:21px">{esc(job["status"])}</div><div class="hint">Код завершения: {esc(job["exit_code"])}</div></div><div class="metric"><div class="label">Город</div><div class="value" style="font-size:21px">{esc(job["city"])}</div></div><div class="metric"><div class="label">Креативы синхронизированы</div><div class="value">{job["total_creatives"]}</div></div><div class="metric"><div class="label">Воркер</div><div class="value" style="font-size:18px;overflow-wrap:anywhere">{esc(job["worker_id"] or "ожидание")}</div></div></div>
-{browser_panel}
-<div class="detail-grid"><div class="panel"><h2>Детали задания</h2><table><tbody><tr><th>Ключевой запрос</th><td>{esc(job["key_text"])}</td></tr><tr><th>Создан</th><td>{esc(job["created_at"])}</td></tr><tr><th>Начат</th><td>{esc(job["started_at"] or "—")}</td></tr><tr><th>Завершён</th><td>{esc(job["finished_at"] or "—")}</td></tr><tr><th>Ошибка</th><td class="error-text">{esc(job["error_text"] or "—")}</td></tr></tbody></table><h2 style="margin-top:22px">Результаты сканирования площадок</h2><div class="table-wrap"><table><thead><tr><th>Площадка</th><th>Статус</th><th>Креативы</th><th>Сигнал рекламы</th><th>Время, сек.</th><th>Ошибка</th></tr></thead><tbody>{scan_rows}</tbody></table></div><h2 style="margin-top:22px">Обнаружения по рекламным площадкам</h2><table><thead><tr><th>Площадка</th><th>Обнаружения</th></tr></thead><tbody>{sites}</tbody></table></div><div class="panel"><div class="panel-head"><h2>Лог воркера</h2><button class="btn secondary" onclick="location.reload()">Обновить</button></div><div class="log mono">{esc(job["log_text"] or "Ожидание подключения воркера…")}</div></div></div><div class="panel"><h2>Результат</h2><pre class="log mono">{result}</pre></div>"""
-    return page(request, f"Запуск #{job_id}", body, "runs")
-
-
-@app.get("/advertisers", response_class=HTMLResponse)
-def advertisers_page(request: Request, q: str = ""):
-    """Рекламодатели, распознанные по ИНН/названию и привязанные к
-    креативам (advertisers/creative_advertiser_links — те же таблицы,
-    что уже питают /api/v1/creatives?inn=...). Реальные данные, не демо —
-    единственная из вкладок референса, для которой в проекте уже готов
-    бэкенд (2026-11-03, фаза 4)."""
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    where_sql, params = "", []
-    if q.strip():
-        like = "%" + q.strip()[:150] + "%"
-        where_sql = "WHERE a.inn LIKE ? OR a.canonical_name LIKE ?"
-        params = [like, like]
-    with closing(connect()) as db:
-        rows = db.execute(
-            f"""
-            SELECT a.id, a.inn, a.canonical_name, a.first_seen_at, a.last_seen_at,
-                   COUNT(DISTINCT l.creative_id) AS creatives_count,
-                   COUNT(DISTINCT c.platform) AS platforms_count
-            FROM advertisers a
-            LEFT JOIN creative_advertiser_links l ON l.advertiser_id = a.id
-            LEFT JOIN creatives c ON c.id = l.creative_id
-            {where_sql}
-            GROUP BY a.id
-            ORDER BY a.last_seen_at DESC
-            LIMIT 200
-            """,
-            params,
-        ).fetchall()
-    rows_html = "".join(
-        f'<tr><td><strong>{esc(r["canonical_name"] or "—")}</strong></td><td class="mono">{esc(r["inn"] or "—")}</td>'
-        f'<td><a href="{P("/creatives?q=")}{esc(r["canonical_name"] or r["inn"] or "")}">{r["creatives_count"]} →</a></td>'
-        f'<td>{r["platforms_count"]}</td><td>{esc(r["first_seen_at"])}</td><td>{esc(r["last_seen_at"])}</td></tr>'
-        for r in rows
-    ) or '<tr><td colspan="6" class="empty">Рекламодатели пока не распознаны. Они появляются автоматически, когда парсер находит ИНН/название на странице креатива.</td></tr>'
-    body = f"""<div class="panel">
-<form method="get" action="{P('/advertisers')}" class="filters"><input name="q" placeholder="Поиск по ИНН или названию" value="{esc(q)}"><button class="btn">Найти</button><a class="btn secondary" href="{P('/advertisers')}">Сбросить</a><span class="muted">Всего: {len(rows)}</span></form>
-<div class="table-wrap"><table><thead><tr><th>Рекламодатель</th><th>ИНН</th><th>Креативов</th><th>Площадок</th><th>Впервые замечен</th><th>Последний раз</th></tr></thead><tbody>{rows_html}</tbody></table></div>
-</div>"""
-    return page(request, "Рекламодатели", body, "advertisers")
-
-
-@app.get("/api/admin/intents")
-def api_admin_intents(request: Request):
-    """Тот же список интентов, что и публичный /api/v1/intents, но под
-    сессионной авторизацией админки (не bearer-токен SaaS-фронтенда) —
-    питает intent-picker на /creatives. Переиспользует ровно ту же логику
-    (стемминг-поиск похожих интентов), что уже production-проверена в
-    публичном API."""
-    if not auth_page(request):
-        raise HTTPException(status_code=401, detail="Требуется вход")
-    with closing(connect()) as db:
-        rows = db.execute(
-            """
-            SELECT PYLOWER(j.key_text) AS intent_key,
-                   MIN(j.key_text) AS display_text,
-                   COUNT(DISTINCT j.id) AS runs_count,
-                   COUNT(DISTINCT o.creative_id) AS creatives_count,
-                   MAX(j.created_at) AS last_run_at
-            FROM jobs j
-            LEFT JOIN occurrences o ON o.job_id = j.id
-            WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> ''
-            GROUP BY intent_key
-            ORDER BY last_run_at DESC
-            """
-        ).fetchall()
-    all_texts = [r["display_text"] for r in rows]
-    items = [
-        {
-            "intent": r["display_text"], "runs_count": r["runs_count"],
-            "creatives_count": r["creatives_count"],
-            "related": _related_intents([r["display_text"]], all_texts),
-        }
-        for r in rows
-    ]
-    return {"items": items}
-
-
-@app.get("/creatives", response_class=HTMLResponse)
-def creatives_page(request: Request, intent: str = ""):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    intents = _parse_intents(intent)
-    with closing(connect()) as db:
-        platforms = db.execute("SELECT DISTINCT platform FROM creatives ORDER BY platform").fetchall()
-        if intents:
-            # Та же серверная логика, что у /api/v1/creatives: сначала
-            # пробуем семантический (эмбеддинги) скоуп, если для хотя бы
-            # одного интента есть кэш; иначе — точное совпадение key_text.
-            combined = _semantic_intent_where(db, intents)
-            if combined:
-                where_sql, params = combined
-            else:
-                where_sql, params = _intent_exists_sql("c", intents), intents
-            items = db.execute(
-                f"SELECT c.* FROM creatives c WHERE {where_sql} ORDER BY c.captured_at DESC LIMIT 300", params
-            ).fetchall()
-        else:
-            items = db.execute("SELECT * FROM creatives ORDER BY captured_at DESC LIMIT 300").fetchall()
-    platform_options = '<option value="all">Все площадки</option>' + "".join(f'<option value="{esc(p["platform"])}">{esc(p["platform"])}</option>' for p in platforms)
-    cards = []
-    for item in items:
-        preview = f'<img src="{esc(item["image_url"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if item["image_url"] and item["image_url"].startswith(("https://", "http://")) else '<span class="muted">HTML-креатив</span>'
-        search_blob = esc(" ".join(filter(None, [item["title"], item["domain"], item["description"], item["platform"]])).lower())
-        cards.append(
-            f'<article class="card creative" data-platform="{esc(item["platform"])}" data-status="{esc(item["recognition_status"])}" data-id="{item["id"]}" data-search="{search_blob}">'
-            f'<div class="creative-preview"><a href="{P("/creatives/")}{item["id"]}">{preview}</a><button type="button" class="save" data-save-id="{item["id"]}" aria-label="Сохранить креатив"><i data-lucide="bookmark"></i></button></div>'
-            f'<div class="creative-info"><h3><a href="{P("/creatives/")}{item["id"]}">{esc(item["title"] or item["domain"] or "Без заголовка")}</a></h3>'
-            f'<div class="muted">{esc(item["platform"])} · {esc(item["domain"] or "домен не определён")}</div>'
-            f'<div class="creative-meta"><span class="badge">{esc(item["detection_method"])}</span><span class="badge {"ok" if item["recognition_status"] == "recognized" else "running"}">{esc(item["recognition_status"])}</span></div>'
-            f'<div class="muted">{esc(item["captured_at"])}</div></div></article>'
-        )
-    intent_label = esc(intents[0]) if intents else "Все запросы"
-    intent_meta = (
-        f"Показаны только креативы по запросу «{esc(intents[0])}»" if intents
-        else "Фильтр по интенту выключен — показаны креативы всех запросов"
-    )
-    body = f"""<section class="intentbar" id="intentBar">
-  <div class="intentbar-left"><i data-lucide="target"></i><div class="intentbar-copy"><strong id="intentBarLabel">{intent_label}</strong><span id="intentBarMeta">{intent_meta}</span></div></div>
-  <div class="intentbar-actions">
-    <button class="secondary" type="button" id="intentBarPicker"><i data-lucide="chevron-down"></i> Выбрать интент</button>
-    {'<a class="secondary" href="' + P('/creatives') + '">Сбросить интент</a>' if intents else ''}
-  </div>
-</section>
-<div class="intentpicker" id="intentPicker" hidden>
-  <div class="intentpicker-head"><strong>Какой интент (поисковый запрос) показывать?</strong><button class="intentpicker-close" type="button" id="intentPickerClose" aria-label="Закрыть">×</button></div>
-  <input class="intentpicker-search" id="intentPickerSearch" placeholder="Поиск по запросам…" autocomplete="off">
-  <div class="intentpicker-list" id="intentPickerList"><div class="empty">Загрузка…</div></div>
-  <div class="intentpicker-foot"><button class="secondary" type="button" id="intentPickerClear">Показать все (сбросить)</button></div>
-</div>
-<div class="librarycontrols">
-  <div class="toolbar">
-    <label class="search"><i data-lucide="search"></i><input id="libQuery" placeholder="Поиск по тексту, домену или площадке…" autocomplete="off"></label>
-    <select class="filter" id="libPlatform">{platform_options}</select>
-    <select class="filter" id="libStatus"><option value="all">Все статусы</option><option value="recognized">recognized</option><option value="partial">partial</option></select>
-    <button class="secondary" type="button" id="libReset"><i data-lucide="rotate-ccw"></i> Сбросить</button>
-  </div>
-  <div class="quickfilters">
-    <button class="quickfilter active" type="button" data-quick="all">Все креативы</button>
-    <button class="quickfilter" type="button" data-quick="saved"><i data-lucide="bookmark"></i> Сохранённые</button>
-  </div>
-  <div class="activefilters" id="libActiveFilters" hidden><span class="activefilterlabel">Активные фильтры</span><div class="filterchips" id="libFilterChips"></div><button class="clearfilters" type="button" id="libClearFilters">Очистить всё</button></div>
-</div>
-<div class="savedsearches" id="libSavedSearches" hidden>
-  <div class="savedsearchhead"><div><strong>Сохранённые поиски</strong><p>Наборы фильтров хранятся в этом браузере.</p></div></div>
-  <div class="savedsearchlist" id="libSavedSearchList"></div>
-</div>
-<div class="resulthead">
-  <div><h2>Библиотека рекламных креативов</h2><p id="libResultCount" aria-live="polite">{len(items)} креативов</p></div>
-  <div class="resultactions">
-    <button class="secondary" type="button" id="libSaveSearch"><i data-lucide="bookmark-plus"></i> Сохранить поиск</button>
-    <button class="secondary" type="button" id="libExport"><i data-lucide="download"></i> Экспорт JSON</button>
-  </div>
-</div>
-<div class="empty-filter" id="libEmptyFilter" hidden><div class="empty-filter-icon"><i data-lucide="search-x"></i></div><h3>Ничего не найдено</h3><p>По текущему запросу и фильтрам нет совпадений.</p><button class="secondary" type="button" id="libEmptyReset">Очистить поиск и фильтры</button></div>
-<div class="creative-grid" id="libCards">{''.join(cards) if cards else '<div class="empty">Креативы пока не синхронизированы с WSL. Убедитесь, что воркер подключён и MySQL-доступ настроен.</div>'}</div>
-<script>
-(function(){{
-  const cards = Array.from(document.querySelectorAll('#libCards .creative'));
-  const queryEl = document.getElementById('libQuery');
-  const platformEl = document.getElementById('libPlatform');
-  const statusEl = document.getElementById('libStatus');
-  const resultCount = document.getElementById('libResultCount');
-  const emptyFilter = document.getElementById('libEmptyFilter');
-  const activeFilters = document.getElementById('libActiveFilters');
-  const filterChips = document.getElementById('libFilterChips');
-  let quickMode = 'all';
-
-  function savedIds() {{
-    try {{ return JSON.parse(localStorage.getItem('parsya_saved_creatives') || '[]'); }} catch(e) {{ return []; }}
-  }}
-  function setSavedIds(ids) {{
-    localStorage.setItem('parsya_saved_creatives', JSON.stringify(ids));
-  }}
-  function refreshSaveButtons() {{
-    const ids = savedIds().map(String);
-    document.querySelectorAll('[data-save-id]').forEach(btn => {{
-      btn.classList.toggle('saved', ids.includes(btn.dataset.saveId));
-    }});
-  }}
-  document.querySelectorAll('[data-save-id]').forEach(btn => {{
-    btn.addEventListener('click', (e) => {{
-      e.preventDefault(); e.stopPropagation();
-      const id = btn.dataset.saveId;
-      let ids = savedIds().map(String);
-      if (ids.includes(id)) ids = ids.filter(x => x !== id); else ids.push(id);
-      setSavedIds(ids);
-      refreshSaveButtons();
-      applyFilters();
-    }});
-  }});
-
-  function applyFilters() {{
-    const q = (queryEl.value || '').trim().toLowerCase();
-    const platform = platformEl.value;
-    const status = statusEl.value;
-    const saved = savedIds().map(String);
-    let visible = 0;
-    cards.forEach(card => {{
-      let ok = true;
-      if (q && !card.dataset.search.includes(q)) ok = false;
-      if (platform !== 'all' && card.dataset.platform !== platform) ok = false;
-      if (status !== 'all' && card.dataset.status !== status) ok = false;
-      if (quickMode === 'saved' && !saved.includes(card.dataset.id)) ok = false;
-      card.hidden = !ok;
-      if (ok) visible++;
-    }});
-    resultCount.textContent = visible + ' ' + (visible % 10 === 1 && visible % 100 !== 11 ? 'креатив' : (visible % 10 >= 2 && visible % 10 <= 4 && (visible % 100 < 10 || visible % 100 >= 20) ? 'креатива' : 'креативов'));
-    emptyFilter.hidden = visible !== 0;
-    const chips = [];
-    if (q) chips.push(['Запрос: «' + q + '»', () => {{ queryEl.value = ''; }}]);
-    if (platform !== 'all') chips.push(['Площадка: ' + platform, () => {{ platformEl.value = 'all'; }}]);
-    if (status !== 'all') chips.push(['Статус: ' + status, () => {{ statusEl.value = 'all'; }}]);
-    activeFilters.hidden = chips.length === 0;
-    filterChips.innerHTML = '';
-    chips.forEach(([label, clear]) => {{
-      const chip = document.createElement('span');
-      chip.className = 'filterchip';
-      chip.innerHTML = label + ' <span>&times;</span>';
-      chip.addEventListener('click', () => {{ clear(); applyFilters(); }});
-      filterChips.appendChild(chip);
-    }});
-  }}
-
-  let debounce = null;
-  queryEl.addEventListener('input', () => {{ clearTimeout(debounce); debounce = setTimeout(applyFilters, 150); }});
-  platformEl.addEventListener('change', applyFilters);
-  statusEl.addEventListener('change', applyFilters);
-  document.getElementById('libReset').addEventListener('click', () => {{
-    queryEl.value = ''; platformEl.value = 'all'; statusEl.value = 'all'; quickMode = 'all';
-    document.querySelectorAll('.quickfilter').forEach(b => b.classList.toggle('active', b.dataset.quick === 'all'));
-    applyFilters();
-  }});
-  document.getElementById('libClearFilters').addEventListener('click', () => document.getElementById('libReset').click());
-  document.getElementById('libEmptyReset').addEventListener('click', () => document.getElementById('libReset').click());
-  document.querySelectorAll('.quickfilter').forEach(btn => {{
-    btn.addEventListener('click', () => {{
-      quickMode = btn.dataset.quick;
-      document.querySelectorAll('.quickfilter').forEach(b => b.classList.toggle('active', b === btn));
-      applyFilters();
-    }});
-  }});
-
-  function loadSavedSearches() {{
-    try {{ return JSON.parse(localStorage.getItem('parsya_saved_searches') || '[]'); }} catch(e) {{ return []; }}
-  }}
-  function renderSavedSearches() {{
-    const list = loadSavedSearches();
-    const panel = document.getElementById('libSavedSearches');
-    const container = document.getElementById('libSavedSearchList');
-    panel.hidden = list.length === 0;
-    container.innerHTML = '';
-    list.forEach((s, i) => {{
-      const item = document.createElement('div');
-      item.className = 'savedsearchitem';
-      item.innerHTML = '<div class="savedsearchbody"><strong></strong><span></span></div><div class="savedsearchactions"><button type="button" data-apply-saved-search="' + i + '"><i data-lucide="play"></i></button><button type="button" data-delete-saved-search="' + i + '"><i data-lucide="trash-2"></i></button></div>';
-      item.querySelector('strong').textContent = s.name;
-      item.querySelector('span').textContent = [s.q && ('«' + s.q + '»'), s.platform !== 'all' && s.platform, s.status !== 'all' && s.status].filter(Boolean).join(' · ') || 'Без фильтров';
-      container.appendChild(item);
-    }});
-    container.querySelectorAll('[data-apply-saved-search]').forEach(btn => btn.addEventListener('click', () => {{
-      const s = loadSavedSearches()[Number(btn.dataset.applySavedSearch)];
-      if (!s) return;
-      queryEl.value = s.q || ''; platformEl.value = s.platform || 'all'; statusEl.value = s.status || 'all';
-      applyFilters();
-    }}));
-    container.querySelectorAll('[data-delete-saved-search]').forEach(btn => btn.addEventListener('click', () => {{
-      const list2 = loadSavedSearches();
-      list2.splice(Number(btn.dataset.deleteSavedSearch), 1);
-      localStorage.setItem('parsya_saved_searches', JSON.stringify(list2));
-      renderSavedSearches();
-      if (window.lucide) lucide.createIcons();
-    }}));
-    if (window.lucide) lucide.createIcons();
-  }}
-  document.getElementById('libSaveSearch').addEventListener('click', () => {{
-    const name = prompt('Название сохранённого поиска:');
-    if (!name) return;
-    const list = loadSavedSearches();
-    list.push({{name: name, q: queryEl.value, platform: platformEl.value, status: statusEl.value}});
-    localStorage.setItem('parsya_saved_searches', JSON.stringify(list));
-    renderSavedSearches();
-  }});
-  document.getElementById('libExport').addEventListener('click', () => {{
-    const visible = cards.filter(c => !c.hidden).map(c => ({{
-      id: c.dataset.id, platform: c.dataset.platform, status: c.dataset.status,
-      title: c.querySelector('h3 a') ? c.querySelector('h3 a').textContent : '',
-    }}));
-    const blob = new Blob([JSON.stringify(visible, null, 2)], {{type: 'application/json'}});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'creatives-export.json';
-    a.click();
-  }});
-
-  refreshSaveButtons();
-  renderSavedSearches();
-  applyFilters();
-}})();
-
-(function(){{
-  const INTENT_BASE = "{P('/creatives')}";
-  const pickerBtn = document.getElementById('intentBarPicker');
-  const picker = document.getElementById('intentPicker');
-  const closeBtn = document.getElementById('intentPickerClose');
-  const clearBtn = document.getElementById('intentPickerClear');
-  const searchEl = document.getElementById('intentPickerSearch');
-  const listEl = document.getElementById('intentPickerList');
-  let loaded = null;
-
-  function renderList(filterText) {{
-    const term = (filterText || '').trim().toLowerCase();
-    const items = (loaded || []).filter(it => !term || it.intent.toLowerCase().includes(term));
-    if (!items.length) {{
-      listEl.innerHTML = '<div class="empty">Ничего не найдено</div>';
-      return;
-    }}
-    listEl.innerHTML = items.map(it =>
-      '<div class="intentrow" data-intent-value="' + encodeURIComponent(it.intent) + '">' +
-      '<div class="intentrow-copy"><strong></strong><span>' + it.creatives_count + ' кр. · ' + it.runs_count + ' запусков</span></div></div>'
-    ).join('');
-    listEl.querySelectorAll('.intentrow').forEach((row, i) => {{
-      row.querySelector('strong').textContent = items[i].intent;
-      row.addEventListener('click', () => {{
-        window.location.href = INTENT_BASE + '?intent=' + row.dataset.intentValue;
-      }});
-    }});
-  }}
-
-  function openPicker() {{
-    picker.hidden = false;
-    if (!loaded) {{
-      fetch("{P('/api/admin/intents')}").then(r => r.json()).then(data => {{
-        loaded = data.items || [];
-        renderList(searchEl.value);
-      }}).catch(() => {{ listEl.innerHTML = '<div class="empty">Не удалось загрузить список</div>'; }});
-    }}
-  }}
-  pickerBtn && pickerBtn.addEventListener('click', () => {{ picker.hidden ? openPicker() : (picker.hidden = true); }});
-  closeBtn && closeBtn.addEventListener('click', () => {{ picker.hidden = true; }});
-  clearBtn && clearBtn.addEventListener('click', () => {{ window.location.href = INTENT_BASE; }});
-  searchEl && searchEl.addEventListener('input', () => renderList(searchEl.value));
-}})();
-</script>"""
-    return page(request, "Библиотека рекламы", body, "creatives")
-
-
-@app.get("/creatives/{creative_id}", response_class=HTMLResponse)
-def creative_detail(request: Request, creative_id: int):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    with closing(connect()) as db:
-        item = db.execute("SELECT * FROM creatives WHERE id=?", (creative_id,)).fetchone()
-        events = db.execute("SELECT o.*,j.city,j.key_text FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE o.creative_id=? ORDER BY o.id DESC LIMIT 100", (creative_id,)).fetchall()
-    if not item:
-        raise HTTPException(status_code=404, detail="Креатив не найден")
-    html_text = ""
-    if item["html_gzip"]:
-        try:
-            html_text = gzip.decompress(item["html_gzip"]).decode("utf-8", errors="replace")
-        except Exception:
-            html_text = "<!-- Не удалось распаковать HTML -->"
-    srcdoc = esc(html_text)
-    ev_rows = "".join(f'<tr><td><a href="{P("/runs/")}{e["job_id"]}">#{e["job_id"]}</a></td><td>{esc(e["platform"])}</td><td>{esc(e["observed_at"])}</td><td>{esc(e["detection_method"])}</td><td>{esc(e["city"])}</td><td>{esc(e["key_text"])}</td></tr>' for e in events) or '<tr><td colspan="6" class="empty">История обнаружений отсутствует</td></tr>'
-    body = f"""<p><a href="{P('/creatives')}">← К библиотеке</a></p><div class="detail-grid"><div class="panel"><h2>Метаданные креатива</h2><table><tbody><tr><th>Площадка</th><td>{esc(item["platform"])}</td></tr><tr><th>Рекламодатель</th><td>{esc(item["domain"] or "—")}</td></tr><tr><th>Заголовок</th><td>{esc(item["title"] or "—")}</td></tr><tr><th>Описание</th><td>{esc(item["description"] or "—")}</td></tr><tr><th>Метод</th><td>{esc(item["detection_method"] or "—")}</td></tr><tr><th>Распознавание</th><td>{esc(item["recognition_status"])}</td></tr><tr><th>Первый запуск</th><td>{esc(item["first_job_id"] or "—")}</td></tr><tr><th>Последний запуск</th><td>{esc(item["last_job_id"] or "—")}</td></tr><tr><th>Сохранён</th><td>{esc(item["captured_at"])}</td></tr><tr><th>SHA-256 HTML</th><td class="mono">{esc(item["html_sha256"] or "—")}</td></tr><tr><th>Ссылка назначения</th><td>{'<a href="'+esc(item["destination_url"])+'" rel="noopener noreferrer" target="_blank">Открыть сайт</a>' if item["destination_url"] and item["destination_url"].startswith(("https://","http://")) else "—"}</td></tr></tbody></table></div><div class="panel"><h2>Оригинальный HTML · изолированный предпросмотр</h2>{'<iframe class="html-frame" sandbox="" referrerpolicy="no-referrer" srcdoc="'+srcdoc+'"></iframe>' if html_text else '<div class="empty">Для этого креатива HTML не сохранён.</div>'}<p><a class="btn secondary" href="{P(f'/api/creatives/{creative_id}/html')}">Скачать HTML</a></p></div></div><div class="panel"><h2>История обнаружений</h2><div class="table-wrap"><table><thead><tr><th>Запуск</th><th>Площадка</th><th>Дата</th><th>Метод</th><th>Город</th><th>Запрос</th></tr></thead><tbody>{ev_rows}</tbody></table></div></div>"""
-    return page(request, f"Креатив #{creative_id}", body, "creatives")
-
-
-@app.get("/api/creatives/{creative_id}/html")
-def creative_html_download(request: Request, creative_id: int):
-    if not auth_page(request):
-        return RedirectResponse(P("/login"), status_code=303)
-    with closing(connect()) as db:
-        row = db.execute("SELECT title,html_gzip FROM creatives WHERE id=?", (creative_id,)).fetchone()
-    if not row or not row["html_gzip"]:
-        raise HTTPException(status_code=404, detail="HTML не найден")
-    try:
-        raw = gzip.decompress(row["html_gzip"])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail="HTML повреждён") from exc
-    from fastapi.responses import Response
-    return Response(raw, media_type="text/html; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="parsya-creative-{creative_id}.html"', "X-Content-Type-Options": "nosniff"})
-
-
-@app.get("/admin/users", response_class=HTMLResponse)
-def admin_users_page(request: Request, created_email: str = "", created_password: str = "", error: str = ""):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    with closing(connect()) as db:
-        rows = db.execute("SELECT id,email,role,is_active,created_at,last_login_at FROM users ORDER BY created_at DESC").fetchall()
-    def role_badge(role: str) -> str:
-        return f'<span class="badge {"ok" if role == "admin" else ""}">{esc(role)}</span>'
-    def status_badge(active: int) -> str:
-        return '<span class="badge ok">активен</span>' if active else '<span class="badge failed">отключён</span>'
-    table_rows = "".join(
-        f'<tr><td>{esc(u["email"])}</td><td>{role_badge(u["role"])}</td><td>{status_badge(u["is_active"])}</td>'
-        f'<td>{esc(u["created_at"])}</td><td>{esc(u["last_login_at"] or "—")}</td>'
-        f'<td class="right">{"" if not u["is_active"] else "<form method=\"post\" action=\"" + P("/admin/users/") + str(u["id"]) + "/deactivate\" style=\"display:inline\"><input type=\"hidden\" name=\"csrf_token\" value=\"" + esc(csrf_token(request)) + "\"><button class=\"btn secondary\">Отключить</button></form>"}</td></tr>'
-        for u in rows
-    ) or '<tr><td colspan="6" class="empty">Пользователей SaaS пока нет</td></tr>'
-    notice = ""
-    if created_email:
-        notice = (f'<div class="notice">Аккаунт <b>{esc(created_email)}</b> создан. Временный пароль: '
-                  f'<span class="mono">{esc(created_password)}</span> — передайте его маркетологу и попросите сменить при первом входе.</div>')
-    if error:
-        notice = f'<div class="notice error-text">{esc(error)}</div>'
-    body = f"""{notice}
-<div class="panel"><div class="panel-head"><h2>Новый аккаунт маркетолога</h2></div>
-<form method="post" action="{P('/admin/users')}" class="formgrid">
-<input type="hidden" name="csrf_token" value="{esc(csrf_token(request))}">
-<div class="field"><label>Email</label><input type="email" name="email" required maxlength="255"></div>
-<div class="field"><label>Роль</label><select name="role"><option value="marketer">Маркетолог</option><option value="admin">Админ SaaS</option></select></div>
-<div class="field" style="grid-column:1/-1"><button class="btn">Создать и выдать пароль</button></div>
-</form>
-<div class="help">Пароль генерируется автоматически и показывается один раз. Эти аккаунты — для входа во фронтенд-сервис (не в эту панель воркера).</div>
-</div>
-<div class="panel"><div class="panel-head"><h2>Аккаунты SaaS-фронтенда</h2></div>
-<div class="table-wrap"><table><thead><tr><th>Email</th><th>Роль</th><th>Статус</th><th>Создан</th><th>Последний вход</th><th></th></tr></thead><tbody>{table_rows}</tbody></table></div></div>"""
-    return page(request, "Пользователи SaaS", body, "users")
-
-
-@app.post("/admin/users", response_class=HTMLResponse)
-def admin_users_create(
-    request: Request, email: str = Form(...), role: str = Form("marketer"),
-    csrf_token_value: str = Form(..., alias="csrf_token"),
-):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    check_csrf(request, csrf_token_value)
-    email = email.strip().casefold()[:255]
-    role = role if role in {"marketer", "admin"} else "marketer"
-    temp_password = secrets.token_urlsafe(9)
-    with closing(connect()) as db:
-        existing = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
-        if existing:
-            return RedirectResponse(P(f"/admin/users?error=Email+{email}+уже+занят"), status_code=303)
-        db.execute(
-            "INSERT INTO users(email,password_hash,role,is_active,created_at) VALUES(?,?,?,1,?)",
-            (email, hash_password(temp_password), role, now_iso()),
-        )
-        db.commit()
-    return RedirectResponse(P(f"/admin/users?created_email={email}&created_password={temp_password}"), status_code=303)
-
-
-@app.post("/admin/users/{user_id}/deactivate")
-def admin_users_deactivate(request: Request, user_id: int, csrf_token_value: str = Form(..., alias="csrf_token")):
-    redirect = admin_or_redirect(request)
-    if redirect:
-        return redirect
-    check_csrf(request, csrf_token_value)
-    with closing(connect()) as db:
-        db.execute("UPDATE users SET is_active=0 WHERE id=?", (user_id,))
-        db.execute("DELETE FROM user_tokens WHERE user_id=?", (user_id,))
-        db.commit()
-    return RedirectResponse(P("/admin/users"), status_code=303)
+@app.get("/creatives")
+@app.get("/creatives/{creative_id}")
+@app.get("/advertisers")
+def old_console_library(creative_id: int | None = None):
+    return _to_lk("intel-library")
 
 
 @app.post("/api/worker/poll")
@@ -2357,7 +1773,7 @@ def worker_poll(payload: PollIn, authorization: str | None = Header(default=None
         db.execute("UPDATE jobs SET status='running',started_at=?,worker_id=? WHERE id=? AND status='queued'", (now_iso(), payload.worker_id, job["id"]))
         db.execute("UPDATE workers SET state='running',current_job_id=?,last_seen=? WHERE worker_id=?", (job["id"], now_iso(), payload.worker_id))
         db.commit()
-        return {"job": {"id": job["id"], "type": "run_parser", "city": job["city"], "key_text": job["key_text"]}, "poll_after_seconds": 2}
+        return {"job": {"id": job["id"], "type": "run_parser", "city": job["city"], "key_text": job["key_text"], "variant": job["variant"] if "variant" in job.keys() else None, "attempts": job["attempts"] if "attempts" in job.keys() else 0}, "poll_after_seconds": 2}
 
 
 @app.post("/api/worker/heartbeat")
@@ -2377,7 +1793,12 @@ def worker_heartbeat(payload: PollIn, authorization: str | None = Header(default
 def worker_log(job_id: int, payload: LogIn, authorization: str | None = Header(default=None)):
     worker_auth(authorization)
     with closing(connect()) as db:
-        cur = db.execute("UPDATE jobs SET log_text=substr(log_text || ?, -500000) WHERE id=? AND status='running'", (payload.text, job_id))
+        # Храним начало лога (100 КБ: аккаунт, прокси, набивка профиля) + хвост 1,4 МБ; раньше оставался только
+        # хвост 500 КБ, и у длинных запусков пропадали строки про аккаунт и набивку (17.11.2026).
+        cur = db.execute(
+            "UPDATE jobs SET log_text=CASE WHEN length(log_text)+length(?)>1500000 "
+            "THEN substr(log_text,1,100000) || substr(substr(log_text,100001) || ?, -1400000) ELSE log_text || ? END "
+            "WHERE id=? AND status='running'", (payload.text, payload.text, payload.text, job_id))
         db.commit()
         if cur.rowcount != 1:
             raise HTTPException(status_code=404, detail="Активное задание не найдено")
@@ -2481,6 +1902,348 @@ def worker_creative_extras(job_id: int, payload: CreativeExtrasBatch, authorizat
             accepted += 1
         db.commit()
     return {"ok": True, "accepted": accepted}
+
+
+_CAROUSEL_ID_RE = re.compile(r"^(\d+)-[0-9a-f]{6,12}-(\d+)-(\d+)$")
+
+
+def carousel_id_parts(carousel_id: str | None) -> tuple[int, int] | None:
+    """id карусели нового вида «<запуск>-<uid>-<всего объявлений>-<видно сразу>» → (всего, видно).
+    Старые id (хеш без дефисов) были общими для всех каруселей площадки — каруселью их не считаем."""
+    m = _CAROUSEL_ID_RE.match(carousel_id or "")
+    if not m:
+        return None
+    total, visible = int(m.group(2)), int(m.group(3))
+    return total, max(1, min(visible, total))
+
+
+def _carousel_platform(page_url: str) -> str:
+    host = urlsplit(page_url if "//" in page_url else "//" + page_url).netloc.lower()
+    return re.sub(r"^(www|m)\.", "", host)
+
+
+def _carousel_match_creative(db: sqlite3.Connection, job_id: int | None, title: str, domain: str) -> int | None:
+    """Объявление библиотеки для слайда: тот же заголовок, сначала среди объявлений этого запуска."""
+    title = (title or "").strip()
+    if not title:
+        return None
+    if job_id:
+        row = db.execute(
+            "SELECT c.id FROM occurrences o JOIN creatives c ON c.id=o.creative_id "
+            "WHERE o.job_id=? AND c.title=? ORDER BY (c.domain=?) DESC, c.id DESC LIMIT 1",
+            (job_id, title, domain or ""),
+        ).fetchone()
+        if row:
+            return int(row["id"])
+    row = db.execute(
+        "SELECT id FROM creatives WHERE title=? ORDER BY (domain=?) DESC, id DESC LIMIT 1", (title, domain or "")
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+@app.post("/api/worker/jobs/{job_id}/impressions")
+def worker_impressions(job_id: int, payload: ImpressionsBatch, authorization: str | None = Header(default=None)):
+    """Счётчик показов: парсер присылает НАКОПЛЕННЫЕ за запуск значения по хэшу креатива,
+    повторная отправка заменяет их (не суммирует)."""
+    worker_auth(authorization)
+    with closing(connect()) as db:
+        if not db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        now = now_iso()
+        for it in payload.items:
+            db.execute(
+                "INSERT INTO creative_impressions(job_id,creative_hash,impressions,best_pos,passes,updated_at) VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(job_id,creative_hash) DO UPDATE SET impressions=excluded.impressions,"
+                "best_pos=COALESCE(excluded.best_pos,creative_impressions.best_pos),"
+                "passes=COALESCE(excluded.passes,creative_impressions.passes),updated_at=excluded.updated_at",
+                (job_id, it.creative_hash.strip().casefold(), it.impressions, it.best_pos, it.passes, now),
+            )
+        db.commit()
+    return {"ok": True, "accepted": len(payload.items)}
+
+
+def _creative_impressions(db: sqlite3.Connection, creative_hash: str) -> dict[str, Any] | None:
+    if not creative_hash:
+        return None
+    rows = db.execute(
+        "SELECT i.job_id,i.impressions,i.best_pos,i.passes,j.key_text,j.city,j.started_at FROM creative_impressions i "
+        "LEFT JOIN jobs j ON j.id=i.job_id WHERE i.creative_hash=? ORDER BY i.job_id DESC",
+        (creative_hash.strip().casefold(),),
+    ).fetchall()
+    if not rows:
+        return None
+    pos = [r["best_pos"] for r in rows if r["best_pos"]]
+    return {
+        "total": sum(int(r["impressions"] or 0) for r in rows),
+        "runs": len(rows),
+        "best_pos": min(pos) if pos else None,
+        "by_job": [dict(r) for r in rows[:10]],
+    }
+
+
+class VkCommunityCheckIn(BaseModel):
+    owner_id: int
+    posts_checked: int = 0
+    ads_found: int = 0
+    incremental: bool = False  # проверка через ленту: только новые посты с прошлой проверки
+    window_days: float | None = None
+    error: str = Field(default="", max_length=500)
+
+
+class VkCommunityChecksBatch(BaseModel):
+    items: list[VkCommunityCheckIn] = Field(default_factory=list, max_length=2000)
+
+
+@app.get("/api/worker/vk-communities")
+def worker_vk_communities(limit: int = 300, fresh: int | None = None, authorization: str | None = Header(default=None)):
+    """Сообщества на обход стен: давно не проверенные — первыми."""
+    worker_auth(authorization)
+    limit = max(1, min(limit, 2000))
+    with closing(connect()) as db:
+        # новые найденные поиском (ещё не проверенные) — не больше VK_DISCOVER_CHECK за обход,
+        # чтобы не вытеснять паблики, где реклама уже есть
+        fresh = db.execute(
+            "SELECT owner_id,name,screen_name,last_checked_at FROM vk_communities WHERE monitor=1 AND source='discover' "
+            "AND last_checked_at IS NULL ORDER BY members DESC LIMIT ?",
+            (min(VK_DISCOVER_CHECK if fresh is None else max(0, fresh), limit),)).fetchall()
+        rest = db.execute(
+            "SELECT owner_id,name,screen_name,last_checked_at FROM vk_communities WHERE monitor=1 "
+            "AND NOT (source='discover' AND last_checked_at IS NULL) "
+            "ORDER BY COALESCE(last_checked_at,'') ASC, ads_found DESC LIMIT ?", (limit,)).fetchall()
+    # свежие вперемешку: сначала старые площадки с рекламой, каждый третий — новый кандидат
+    items, fi = [], 0
+    for i, r in enumerate(rest):
+        if i % 3 == 2 and fi < len(fresh):
+            items.append(dict(fresh[fi])); fi += 1
+        items.append(dict(r))
+    items += [dict(r) for r in fresh[fi:]]
+    return {"items": items[:limit]}
+
+
+VK_DISCOVER_CHECK = int(os.getenv("PARSYA_VK_DISCOVER_CHECK", "15"))
+VK_DISCOVER_BACKLOG = int(os.getenv("PARSYA_VK_DISCOVER_BACKLOG", "300"))
+VK_DISCOVER_TEMPLATES = ["Подслушано", "Объявления", "Барахолка", "Отдам даром", "Услуги", "Новости",
+                         "Типичный", "Работа", "Доска объявлений"]
+
+
+def _vk_discover_seed(db) -> None:
+    cities = []
+    for (c,) in db.execute("SELECT DISTINCT city FROM jobs WHERE COALESCE(city,'')<>'' AND city<>'Вся Россия'"):
+        c = c.strip()
+        c = c[:1].upper() + c[1:]
+        if c and c not in cities:
+            cities.append(c)
+    queries = list(VK_DISCOVER_TEMPLATES) + [f"{t} {c}" for c in cities for t in ("Подслушано", "Объявления")]
+    db.executemany("INSERT OR IGNORE INTO vk_discover(query) VALUES(?)", [(q,) for q in queries])
+
+
+@app.get("/api/worker/vk-discover-queries")
+def worker_vk_discover_queries(limit: int = 4, authorization: str | None = Header(default=None)):
+    """Поиск новых пабликов-площадок: очередь запросов groups.search (шаблон × город), по кругу."""
+    worker_auth(authorization)
+    with closing(connect()) as db:
+        backlog = db.execute("SELECT COUNT(*) FROM vk_communities WHERE source='discover' AND monitor=1 "
+                             "AND last_checked_at IS NULL").fetchone()[0]
+        if backlog >= VK_DISCOVER_BACKLOG:  # сначала проверим уже найденных кандидатов
+            return {"items": [], "backlog": backlog}
+        _vk_discover_seed(db)
+        db.commit()
+        rows = db.execute("SELECT query,next_offset FROM vk_discover WHERE done=0 "
+                          "ORDER BY COALESCE(last_run_at,'') ASC, query LIMIT ?", (max(0, min(limit, 50)),)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+class VkDiscoveredItem(BaseModel):
+    owner_id: int
+    name: str = Field(default="", max_length=300)
+    screen_name: str = Field(default="", max_length=120)
+    members: int | None = None
+
+
+class VkDiscoveredIn(BaseModel):
+    query: str = Field(max_length=200)
+    next_offset: int = 0
+    total: int | None = None
+    done: bool = False
+    items: list[VkDiscoveredItem] = Field(default_factory=list, max_length=1000)
+
+
+@app.post("/api/worker/vk-communities/discovered")
+def worker_vk_discovered(payload: VkDiscoveredIn, authorization: str | None = Header(default=None)):
+    worker_auth(authorization)
+    now = now_iso()
+    added = 0
+    with closing(connect()) as db:
+        for it in payload.items:
+            cur = db.execute("INSERT OR IGNORE INTO vk_communities(owner_id,name,screen_name,members,monitor,added_at,source) "
+                             "VALUES(?,?,?,?,1,?,'discover')", (it.owner_id, it.name, it.screen_name, it.members, now))
+            added += cur.rowcount
+        db.execute("INSERT OR IGNORE INTO vk_discover(query) VALUES(?)", (payload.query,))
+        db.execute("UPDATE vk_discover SET next_offset=?,total=?,added=added+?,last_run_at=?,done=? WHERE query=?",
+                   (payload.next_offset, payload.total, added, now, int(payload.done), payload.query))
+        db.commit()
+    return {"ok": True, "added": added}
+
+
+@app.get("/api/worker/vk-ord-known")
+def worker_vk_ord_known(authorization: str | None = Header(default=None)):
+    """ERID → рекламодатель по уже собранной рекламе VK: сборщику не надо заново открывать ОРД."""
+    worker_auth(authorization)
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT cr.erid AS erid, MAX(a.canonical_name) AS name, MAX(a.inn) AS inn "
+            "FROM creatives cr JOIN creative_advertiser_links l ON l.creative_id=cr.id "
+            "JOIN advertisers a ON a.id=l.advertiser_id "
+            "WHERE cr.platform='vk.com' AND COALESCE(cr.erid,'')<>'' "
+            "AND (COALESCE(a.inn,'')<>'' OR COALESCE(a.canonical_name,'')<>'') GROUP BY cr.erid").fetchall()
+    return {"items": {r["erid"]: {k: r[k] for k in ("name", "inn") if r[k]} for r in rows}}
+
+
+class VkGroupIn(BaseModel):
+    owner_id: int
+    name: str = Field(default="", max_length=300)
+    screen_name: str = Field(default="", max_length=120)
+    members: int | None = None
+    activity: str = Field(default="", max_length=200)
+    city: str = Field(default="", max_length=100)
+    verified: int = 0
+    site: str = Field(default="", max_length=300)
+    description: str = Field(default="", max_length=1000)
+    type: str = Field(default="", max_length=20)
+    is_closed: int = 0
+    rank: int | None = None
+
+
+class VkGroupsBatch(BaseModel):
+    items: list[VkGroupIn] = Field(default_factory=list, max_length=1000)
+
+
+@app.post("/api/worker/jobs/{job_id}/vk-groups")
+def worker_vk_groups(job_id: int, payload: VkGroupsBatch, authorization: str | None = Header(default=None)):
+    """Результат поиска сообществ VK по ключу и городу."""
+    worker_auth(authorization)
+    now = now_iso()
+    new = 0
+    with closing(connect()) as db:
+        for it in payload.items:
+            existed = db.execute("SELECT 1 FROM vk_groups WHERE owner_id=?", (it.owner_id,)).fetchone()
+            new += 0 if existed else 1
+            db.execute(
+                "INSERT INTO vk_groups(owner_id,name,screen_name,members,activity,city,verified,site,description,type,is_closed,first_seen_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_id) DO UPDATE SET name=excluded.name,screen_name=excluded.screen_name,"
+                "members=excluded.members,activity=excluded.activity,city=excluded.city,verified=excluded.verified,site=excluded.site,"
+                "description=excluded.description,type=excluded.type,is_closed=excluded.is_closed,updated_at=excluded.updated_at",
+                (it.owner_id, it.name, it.screen_name, it.members, it.activity, it.city, it.verified, it.site, it.description,
+                 it.type, it.is_closed, now, now))
+            db.execute("INSERT OR REPLACE INTO vk_group_results(job_id,owner_id,rank) VALUES(?,?,?)", (job_id, it.owner_id, it.rank))
+            db.execute("UPDATE vk_communities SET members=COALESCE(?,members) WHERE owner_id=?", (it.members, it.owner_id))
+        db.commit()
+    return {"ok": True, "new": new}
+
+
+@app.post("/api/worker/vk-communities/checked")
+def worker_vk_communities_checked(payload: VkCommunityChecksBatch, authorization: str | None = Header(default=None)):
+    worker_auth(authorization)
+    now = now_iso()
+    with closing(connect()) as db:
+        for it in payload.items:
+            db.execute("UPDATE vk_communities SET last_checked_at=?,posts_checked=posts_checked+?,"
+                       "ads_found=CASE WHEN ? THEN ads_found+? ELSE ? END,last_error=? WHERE owner_id=?",
+                       (now, it.posts_checked, int(it.incremental), it.ads_found, it.ads_found, it.error or None, it.owner_id))
+            if it.incremental and it.window_days:
+                db.execute("UPDATE vk_communities SET feed_posts=feed_posts+?,feed_days=feed_days+?,feed_ads=feed_ads+? "
+                           "WHERE owner_id=?", (it.posts_checked, it.window_days, it.ads_found, it.owner_id))
+            if not it.ads_found:  # пусто или стена закрыта/ошибка
+                # кандидат из поиска без рекламы в последних постах — снимаем с обхода
+                db.execute("UPDATE vk_communities SET monitor=0 WHERE owner_id=? AND source='discover' "
+                           "AND first_ad_at IS NULL", (it.owner_id,))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/worker/jobs/{job_id}/vk-meta")
+def worker_vk_meta(job_id: int, payload: VkMetaBatch, authorization: str | None = Header(default=None)):
+    """Дата публикации и статистика VK-постов. Статистику обновляем свежей, дату публикации — не трогаем."""
+    worker_auth(authorization)
+    accepted = 0
+    now = now_iso()
+    with closing(connect()) as db:
+        for it in payload.items:
+            row = db.execute("SELECT id FROM creatives WHERE creative_hash=?", (it.creative_hash,)).fetchone()
+            if not row:
+                continue
+            db.execute(
+                "INSERT INTO vk_posts(creative_id,format,post_key,owner_id,owner_name,owner_screen_name,owner_members,post_url,posted_at,"
+                "views,likes,reposts,comments,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(creative_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,"
+                "posted_at=COALESCE(NULLIF(vk_posts.posted_at,''),excluded.posted_at),"
+                "owner_members=COALESCE(excluded.owner_members,vk_posts.owner_members),"
+                "views=COALESCE(excluded.views,vk_posts.views),likes=COALESCE(excluded.likes,vk_posts.likes),"
+                "reposts=COALESCE(excluded.reposts,vk_posts.reposts),comments=COALESCE(excluded.comments,vk_posts.comments)",
+                (row["id"], it.format, it.post_key, it.owner_id, it.owner_name, it.owner_screen_name, it.owner_members,
+                 it.post_url, it.posted_at, it.views, it.likes, it.reposts, it.comments, now, now),
+            )
+            if it.owner_id and it.owner_id < 0:  # паблик с рекламой — на мониторинг стены
+                db.execute(
+                    "INSERT INTO vk_communities(owner_id,name,screen_name,members,first_ad_at,last_ad_at,added_at,source) "
+                    "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(owner_id) DO UPDATE SET name=excluded.name,"
+                    "screen_name=COALESCE(NULLIF(excluded.screen_name,''),vk_communities.screen_name),"
+                    "members=COALESCE(excluded.members,vk_communities.members),"
+                    "first_ad_at=COALESCE(vk_communities.first_ad_at,excluded.first_ad_at),"
+                    "monitor=CASE WHEN vk_communities.source='discover' THEN 1 ELSE vk_communities.monitor END,"
+                    "last_ad_at=MAX(COALESCE(vk_communities.last_ad_at,''),excluded.last_ad_at)",
+                    (it.owner_id, it.owner_name, it.owner_screen_name, it.owner_members, it.posted_at or now,
+                     it.posted_at or now, now, f"job:{job_id}"),
+                )
+            accepted += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted}
+
+
+@app.post("/api/worker/jobs/{job_id}/carousels")
+def worker_carousels(job_id: int, payload: CarouselSlidesBatch, authorization: str | None = Header(default=None)):
+    """Состав каруселей из разных объявлений: парсер присылает каждый увиденный слайд
+    (id карусели, место, заголовок, домен, картинка). Повторная отправка слайда его обновляет."""
+    worker_auth(authorization)
+    accepted = 0
+    with closing(connect()) as db:
+        if not db.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        for item in payload.slides:
+            parts = carousel_id_parts(item.carousel_id.strip())
+            if not parts or not item.title.strip():
+                continue
+            total, visible = parts
+            db.execute(
+                "INSERT INTO carousel_slides(carousel_id,slide_index,job_id,total,visible,title,description,domain,image_url,"
+                "page_url,platform,creative_id,observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(carousel_id,slide_index) DO UPDATE SET title=excluded.title,description=excluded.description,"
+                "domain=excluded.domain,image_url=CASE WHEN excluded.image_url<>'' THEN excluded.image_url ELSE carousel_slides.image_url END,"
+                "creative_id=COALESCE(excluded.creative_id,carousel_slides.creative_id),observed_at=excluded.observed_at",
+                (item.carousel_id.strip(), item.slide_index, job_id, total, visible, item.title.strip(), item.description.strip(),
+                 item.domain.strip(), item.image_url.strip(), item.page_url.strip(), _carousel_platform(item.page_url.strip()),
+                 _carousel_match_creative(db, job_id, item.title, item.domain.strip()), now_iso()),
+            )
+            accepted += 1
+        galleries = 0
+        for g in payload.galleries:
+            images = [u.strip()[:1000] for u in g.images if u and u.strip()]
+            if len(images) < 2:
+                continue
+            key = hashlib.sha1("|".join([g.domain.strip().lower(), g.title.strip()] + images).encode("utf-8", "ignore")).hexdigest()
+            db.execute(
+                "INSERT INTO creative_galleries(gallery_key,job_id,creative_id,title,description,domain,images_json,total,visible,"
+                "platform,page_url,observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(gallery_key) DO UPDATE SET job_id=excluded.job_id,observed_at=excluded.observed_at,"
+                "visible=CASE WHEN excluded.visible>0 THEN excluded.visible ELSE creative_galleries.visible END,"
+                "creative_id=COALESCE(excluded.creative_id,creative_galleries.creative_id)",
+                (key, job_id, _carousel_match_creative(db, job_id, g.title, g.domain.strip()), g.title.strip(), g.description.strip(),
+                 g.domain.strip(), json.dumps(images, ensure_ascii=False), len(images), min(g.visible, len(images)),
+                 _carousel_platform(g.page_url.strip()), g.page_url.strip(), now_iso()),
+            )
+            galleries += 1
+        db.commit()
+    return {"ok": True, "accepted": accepted, "galleries": galleries}
 
 
 @app.post("/api/worker/jobs/{job_id}/secondary-links")
@@ -2987,46 +2750,6 @@ def worker_browser_close(job_id: int, authorization: str | None = Header(default
             "UPDATE browser_sessions SET active=0,captcha_required=0,pending_command_json=NULL,updated_at=? WHERE job_id=?",
             (now_iso(), job_id),
         )
-        db.commit()
-    return {"ok": True}
-
-
-@app.get("/api/admin/jobs/{job_id}/browser/state")
-def admin_browser_state(request: Request, job_id: int):
-    if not auth_page(request):
-        raise HTTPException(status_code=401)
-    with closing(connect()) as db:
-        row = db.execute("SELECT * FROM browser_sessions WHERE job_id=?", (job_id,)).fetchone()
-    if not row:
-        return {"active": False, "captcha_required": False}
-    return {
-        "active": bool(row["active"]), "captcha_required": bool(row["captcha_required"]),
-        "url": row["url"], "title": row["title"], "screenshot_b64": row["screenshot_b64"],
-        "viewport_width": row["viewport_width"], "viewport_height": row["viewport_height"],
-        "updated_at": row["updated_at"],
-    }
-
-
-@app.post("/api/admin/jobs/{job_id}/browser/command")
-def admin_browser_command(request: Request, job_id: int, payload: BrowserCommandIn):
-    if not auth_page(request):
-        raise HTTPException(status_code=401)
-    command: dict[str, Any] = {"action": payload.action}
-    if payload.action == "click":
-        if payload.x_ratio is None or payload.y_ratio is None:
-            raise HTTPException(status_code=400, detail="x_ratio/y_ratio обязательны для click")
-        command.update({"x_ratio": payload.x_ratio, "y_ratio": payload.y_ratio})
-    elif payload.action == "key":
-        command["key"] = payload.key
-    elif payload.action == "text":
-        command["text"] = payload.text
-    elif payload.action == "scroll":
-        command["scroll_y"] = payload.scroll_y
-    with closing(connect()) as db:
-        row = db.execute("SELECT job_id FROM browser_sessions WHERE job_id=?", (job_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Браузерная сессия для этого задания не активна")
-        db.execute("UPDATE browser_sessions SET pending_command_json=? WHERE job_id=?", (json.dumps(command), job_id))
         db.commit()
     return {"ok": True}
 
@@ -3568,14 +3291,244 @@ def _creative_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "app_store_id": row["app_store_id"],
         "carousel_id": row["carousel_id"],
         "carousel_slide_index": row["carousel_slide_index"],
+        # размер карусели есть только у id нового вида; у старых (общий хеш на площадку) — None
+        "carousel_total": (carousel_id_parts(row["carousel_id"]) or (None, None))[0],
+        "carousel_visible": (carousel_id_parts(row["carousel_id"]) or (None, None))[1],
     }
 
 
+# ---------------------------------------------------------------- сервис «ВКонтакте» (19.11.2026)
+VK_COOKIES_FILE = Path(os.getenv("PARSYA_VK_COOKIES", str(Path.home() / ".config/parsya/vk/vk_cookies.json")))
+
+
+def _vk_account_status() -> dict[str, Any]:
+    out: dict[str, Any] = {"cookies_saved_at": None, "cookies_count": 0}
+    try:
+        data = json.loads(VK_COOKIES_FILE.read_text())
+        out["cookies_saved_at"] = data.get("saved_at")
+        out["cookies_count"] = len(data.get("cookies") or [])
+    except Exception:
+        pass
+    return out
+
+
+@app.get("/api/v1/vk/overview")
+def api_vk_overview(principal: dict = Depends(public_api_principal)):
+    week = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    with closing(connect()) as db:
+        one = lambda sql, *a: db.execute(sql, a).fetchone()[0]
+        has = lambda t: db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+        if not has("vk_communities") or not has("vk_posts"):
+            return {"creatives": 0, "communities": 0}
+        walls = db.execute("SELECT id,status,created_at,finished_at,total_creatives FROM jobs WHERE variant='vk-walls' ORDER BY id DESC LIMIT 1").fetchone()
+        search = db.execute("SELECT id,status,key_text,city,finished_at,total_creatives FROM jobs WHERE variant IN ('vk','vk+feed') ORDER BY id DESC LIMIT 1").fetchone()
+        top_comm = db.execute(
+            "SELECT k.owner_id,k.name,k.screen_name,k.members,COUNT(p.creative_id) AS ads FROM vk_communities k "
+            "LEFT JOIN vk_posts p ON p.owner_id=k.owner_id GROUP BY k.owner_id ORDER BY ads DESC LIMIT 6").fetchall()
+        top_adv = db.execute(
+            "SELECT a.inn,a.canonical_name,COUNT(*) AS ads,COUNT(DISTINCT p.owner_id) AS communities FROM creative_advertiser_links l "
+            "JOIN advertisers a ON a.id=l.advertiser_id JOIN creatives c ON c.id=l.creative_id AND c.platform='vk.com' "
+            "LEFT JOIN vk_posts p ON p.creative_id=c.id GROUP BY a.id ORDER BY ads DESC LIMIT 6").fetchall()
+        return {
+            "creatives": one("SELECT COUNT(*) FROM creatives WHERE platform='vk.com'"),
+            "creatives_week": one("SELECT COUNT(*) FROM creatives WHERE platform='vk.com' AND captured_at>=?", week),
+            "with_advertiser": one("SELECT COUNT(DISTINCT l.creative_id) FROM creative_advertiser_links l JOIN creatives c ON c.id=l.creative_id WHERE c.platform='vk.com'"),
+            "communities": one("SELECT COUNT(*) FROM vk_communities WHERE COALESCE(source,'')<>'discover' OR first_ad_at IS NOT NULL"),
+            "monitored": one("SELECT COUNT(*) FROM vk_communities WHERE monitor=1 AND (COALESCE(source,'')<>'discover' OR first_ad_at IS NOT NULL)"),
+            "candidates": one("SELECT COUNT(*) FROM vk_communities WHERE source='discover' AND first_ad_at IS NULL"),
+            "candidates_queued": one("SELECT COUNT(*) FROM vk_communities WHERE source='discover' AND first_ad_at IS NULL AND monitor=1 AND last_checked_at IS NULL"),
+            "discovered_with_ads": one("SELECT COUNT(*) FROM vk_communities WHERE source='discover' AND first_ad_at IS NOT NULL"),
+            "advertisers": one("SELECT COUNT(DISTINCT l.advertiser_id) FROM creative_advertiser_links l JOIN creatives c ON c.id=l.creative_id WHERE c.platform='vk.com'"),
+            "advertisers_both": one(
+                "SELECT COUNT(*) FROM (SELECT l.advertiser_id FROM creative_advertiser_links l JOIN creatives c ON c.id=l.creative_id "
+                "GROUP BY l.advertiser_id HAVING SUM(c.platform='vk.com')>0 AND SUM(c.platform<>'vk.com')>0)"),
+            "last_walls": dict(walls) if walls else None,
+            "last_search": dict(search) if search else None,
+            "walls_every_hours": VK_WALLS_HOURS,
+            "account": _vk_account_status(),
+            "top_communities": [dict(r) for r in top_comm],
+            "top_advertisers": [{"inn": r["inn"], "name": _clean_adv_name(r["canonical_name"], r["inn"]), "ads": r["ads"],
+                                 "communities": r["communities"]} for r in top_adv],
+        }
+
+
+@app.get("/api/v1/vk/communities")
+def api_vk_communities(q: str = "", kind: str = "", limit: int = 100, offset: int = 0,
+                       principal: dict = Depends(public_api_principal)):
+    """kind: '' — площадки с рекламой; 'candidates' — найденные поиском, рекламы пока нет."""
+    limit, offset = _paging(limit, offset)
+    with closing(connect()) as db:
+        has_ads = "(COALESCE(k.source,'')<>'discover' OR k.first_ad_at IS NOT NULL)"
+        conds, args = [f"NOT {has_ads}" if kind == "candidates" else has_ads], []
+        if q:
+            conds.append("(k.name LIKE ? OR k.screen_name LIKE ?)")
+            args += [f"%{q}%", f"%{q}%"]
+        where = "WHERE " + " AND ".join(conds)
+        total = db.execute(f"SELECT COUNT(*) FROM vk_communities k {where}", args).fetchone()[0]
+        rows = db.execute(
+            f"SELECT k.*, (SELECT COUNT(*) FROM vk_posts p WHERE p.owner_id=k.owner_id) AS ads_total,"
+            f"(SELECT COUNT(DISTINCT l.advertiser_id) FROM vk_posts p JOIN creative_advertiser_links l ON l.creative_id=p.creative_id "
+            f" WHERE p.owner_id=k.owner_id) AS advertisers,"
+            f"(SELECT MAX(p.posted_at) FROM vk_posts p WHERE p.owner_id=k.owner_id) AS last_post_at "
+            f"FROM vk_communities k {where} ORDER BY ads_total DESC, k.members DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["url"] = f"https://vk.com/{d['screen_name']}" if d.get("screen_name") else f"https://vk.com/club{abs(d['owner_id'])}"
+        items.append(d)
+    return {"items": items, "total": total}
+
+
+class VkMonitorIn(BaseModel):
+    monitor: bool
+
+
+@app.get("/api/v1/vk/communities/{owner_id}")
+def api_vk_community(owner_id: int, principal: dict = Depends(public_api_principal)):
+    """Карточка паблика: подписчики, частота постов и доля рекламы (по ленте), рекламодатели, реклама по неделям."""
+    with closing(connect()) as db:
+        k = db.execute("SELECT * FROM vk_communities WHERE owner_id=?", (owner_id,)).fetchone()
+        g = db.execute("SELECT * FROM vk_groups WHERE owner_id=?", (owner_id,)).fetchone()
+        if not k and not g:
+            raise HTTPException(status_code=404, detail="Паблик не найден")
+        d = dict(k) if k else {"owner_id": owner_id, "monitor": 0, "feed_posts": 0, "feed_days": 0, "feed_ads": 0,
+                               "source": "groups-search", "tracked": False}
+        if g:  # данные из поиска сообществ: тематика, город, сайт, описание
+            for col in ("name", "screen_name", "members"):
+                d[col] = d.get(col) or g[col]
+            d.update({col: g[col] for col in ("activity", "city", "verified", "site", "description", "type", "is_closed")})
+        st = db.execute("SELECT COUNT(*) AS ads, MIN(posted_at) AS first_post, MAX(posted_at) AS last_post, "
+                        "SUM(views) AS views, AVG(views) AS avg_views, AVG(likes) AS avg_likes "
+                        "FROM vk_posts WHERE owner_id=?", (owner_id,)).fetchone()
+        d.update({k2: st[k2] for k2 in st.keys()})
+        since30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        d["ads_30d"] = db.execute("SELECT COUNT(*) FROM vk_posts WHERE owner_id=? AND posted_at>=?", (owner_id, since30)).fetchone()[0]
+        d["advertisers"] = [dict(r) for r in db.execute(
+            "SELECT a.id, a.canonical_name AS name, a.inn, COUNT(*) AS ads, MAX(p.posted_at) AS last_post, "
+            "(SELECT COUNT(DISTINCT p2.owner_id) FROM vk_posts p2 JOIN creative_advertiser_links l2 ON l2.creative_id=p2.creative_id "
+            " WHERE l2.advertiser_id=a.id) AS communities "
+            "FROM vk_posts p JOIN creative_advertiser_links l ON l.creative_id=p.creative_id "
+            "JOIN advertisers a ON a.id=l.advertiser_id WHERE p.owner_id=? "
+            "GROUP BY a.id ORDER BY ads DESC LIMIT 30", (owner_id,)).fetchall()]
+        weeks = db.execute(
+            "SELECT strftime('%Y-%W', posted_at) AS w, MIN(substr(posted_at,1,10)) AS day, COUNT(*) AS ads "
+            "FROM vk_posts WHERE owner_id=? AND posted_at>=? GROUP BY w ORDER BY w",
+            (owner_id, (datetime.now(timezone.utc) - timedelta(weeks=12)).isoformat())).fetchall()
+        d["weeks"] = [dict(r) for r in weeks]
+    d["posts_per_day"] = round(d["feed_posts"] / d["feed_days"], 1) if d.get("feed_days") else None
+    d["ad_share"] = round(d["feed_ads"] / d["feed_posts"], 3) if d.get("feed_posts") else None
+    d["url"] = f"https://vk.com/{d['screen_name']}" if d.get("screen_name") else f"https://vk.com/club{abs(owner_id)}"
+    return d
+
+
+@app.post("/api/v1/vk/communities/{owner_id}/monitor")
+def api_vk_community_monitor(owner_id: int, payload: VkMonitorIn, principal: dict = Depends(public_api_principal)):
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        n = db.execute("UPDATE vk_communities SET monitor=? WHERE owner_id=?", (1 if payload.monitor else 0, owner_id)).rowcount
+        if not n and payload.monitor:  # сообщество из поиска сообществ — ставим на обход стен
+            n = db.execute("INSERT INTO vk_communities(owner_id,name,screen_name,members,monitor,added_at,source) "
+                           "SELECT owner_id,name,screen_name,members,1,?,'groups-search' FROM vk_groups WHERE owner_id=?",
+                           (now_iso(), owner_id)).rowcount
+        db.commit()
+    if not n:
+        raise HTTPException(status_code=404, detail="Сообщество не найдено")
+    return {"ok": True, "monitor": payload.monitor}
+
+
+class VkGroupsSearchIn(BaseModel):
+    query: str = Field(min_length=2, max_length=200)
+    city: str = Field(default="", max_length=100)
+
+
+@app.post("/api/v1/vk/groups-search")
+def api_vk_groups_search(payload: VkGroupsSearchIn, principal: dict = Depends(public_api_principal)):
+    """Поиск сообществ VK по ключу и городу — задание для воркера (браузер с аккаунтом парсера)."""
+    uid = require_user_principal(principal)
+    city = payload.city.strip() or "Вся Россия"
+    with closing(connect()) as db:
+        jid = db.execute("INSERT INTO jobs(status,city,key_text,created_at,owner_user_id,variant) VALUES('queued',?,?,?,?,'vk-groups')",
+                         (city, payload.query.strip(), now_iso(), uid)).lastrowid
+        db.commit()
+    return {"id": jid}
+
+
+@app.get("/api/v1/vk/groups-searches")
+def api_vk_groups_searches(limit: int = 30, principal: dict = Depends(public_api_principal)):
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT j.id,j.status,j.key_text,j.city,j.created_at,j.finished_at,j.error_text,"
+            "(SELECT COUNT(*) FROM vk_group_results r WHERE r.job_id=j.id) AS groups "
+            "FROM jobs j WHERE j.variant='vk-groups' ORDER BY j.id DESC LIMIT ?", (max(1, min(limit, 200)),)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.get("/api/v1/vk/groups-searches/{job_id}")
+def api_vk_groups_search_result(job_id: int, q: str = "", min_members: int = 0, principal: dict = Depends(public_api_principal)):
+    """Сообщества из поиска + что мы о них знаем: реклама в них, мониторинг, частота постов."""
+    with closing(connect()) as db:
+        job = db.execute("SELECT id,status,key_text,city,created_at,finished_at,error_text FROM jobs WHERE id=? AND variant='vk-groups'",
+                         (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Поиск не найден")
+        args: list = [job_id, max(0, min_members)]
+        cond = ""
+        if q:
+            cond = " AND (g.name LIKE ? OR g.activity LIKE ? OR g.description LIKE ?)"
+            args += [f"%{q}%"] * 3
+        rows = db.execute(
+            "SELECT g.*, r.rank, k.monitor, k.last_checked_at, k.feed_posts, k.feed_days, k.feed_ads, "
+            "(SELECT COUNT(*) FROM vk_posts p WHERE p.owner_id=g.owner_id) AS ads_total "
+            "FROM vk_group_results r JOIN vk_groups g ON g.owner_id=r.owner_id "
+            "LEFT JOIN vk_communities k ON k.owner_id=g.owner_id "
+            f"WHERE r.job_id=? AND COALESCE(g.members,0)>=?{cond} ORDER BY r.rank LIMIT 1000", args).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["url"] = f"https://vk.com/{d['screen_name']}" if d.get("screen_name") else f"https://vk.com/club{abs(d['owner_id'])}"
+        d["posts_per_day"] = round(d["feed_posts"] / d["feed_days"], 1) if d.get("feed_days") else None
+        items.append(d)
+    return {"job": dict(job), "items": items}
+
+
+@app.get("/api/v1/vk/communities/{owner_id}/creative-ids")
+def api_vk_community_creative_ids(owner_id: int, principal: dict = Depends(public_api_principal)):
+    with closing(connect()) as db:
+        ids = [r[0] for r in db.execute("SELECT creative_id FROM vk_posts WHERE owner_id=? ORDER BY posted_at DESC LIMIT 500", (owner_id,))]
+    return {"ids": ids}
+
+
+@app.post("/api/v1/vk/walls/run")
+def api_vk_walls_run(principal: dict = Depends(public_api_principal)):
+    """Обойти стены сейчас, не дожидаясь расписания."""
+    require_user_principal(principal)
+    with closing(connect()) as db:
+        busy = db.execute("SELECT id FROM jobs WHERE variant='vk-walls' AND status IN ('queued','running') LIMIT 1").fetchone()
+        if busy:
+            return {"id": busy[0], "already": True}
+        jid = db.execute("INSERT INTO jobs(status,city,key_text,created_at,variant) VALUES('queued','Вся Россия','Мониторинг стен VK',?,'vk-walls')",
+                         (now_iso(),)).lastrowid
+        db.commit()
+    return {"id": jid, "already": False}
+
+
 @app.get("/api/v1/advertisers")
-def api_list_advertisers(q: str = "", intent: str = "", limit: int = 25, offset: int = 0, principal: dict = Depends(public_api_principal)):
+def api_list_advertisers(q: str = "", intent: str = "", limit: int = 25, offset: int = 0, source: str = "",
+                         principal: dict = Depends(public_api_principal)):
+    """source: '' — все; vk — есть реклама в VK; yandex — есть в Яндексе; both — и там, и там."""
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
         where_parts, params = [], []
+        has_vk = ("EXISTS (SELECT 1 FROM creative_advertiser_links lv JOIN creatives cv ON cv.id=lv.creative_id "
+                  "WHERE lv.advertiser_id=a.id AND cv.platform='vk.com')")
+        has_ya = ("EXISTS (SELECT 1 FROM creative_advertiser_links ly JOIN creatives cy ON cy.id=ly.creative_id "
+                  "WHERE ly.advertiser_id=a.id AND cy.platform<>'vk.com')")
+        if source == "vk":
+            where_parts.append(has_vk)
+        elif source == "yandex":
+            where_parts.append(has_ya)
+        elif source == "both":
+            where_parts.append(f"{has_vk} AND {has_ya}")
         if q:
             where_parts.append("(a.inn LIKE ? OR a.canonical_name LIKE ?)")
             params.extend([f"%{q}%", f"%{q}%"])
@@ -3590,12 +3543,16 @@ def api_list_advertisers(q: str = "", intent: str = "", limit: int = 25, offset:
         total = db.execute(f"SELECT COUNT(*) FROM advertisers a {where}", params).fetchone()[0]
         rows = db.execute(
             f"SELECT a.id,a.inn,a.canonical_name,a.address,a.phone,a.website_url,a.first_seen_at,a.last_seen_at,"
-            f"(SELECT COUNT(*) FROM creative_advertiser_links l WHERE l.advertiser_id=a.id) AS creatives_count "
+            f"(SELECT COUNT(*) FROM creative_advertiser_links l WHERE l.advertiser_id=a.id) AS creatives_count,"
+            f"(SELECT COUNT(*) FROM creative_advertiser_links l JOIN creatives c ON c.id=l.creative_id "
+            f" WHERE l.advertiser_id=a.id AND c.platform='vk.com') AS vk_count "
             f"FROM advertisers a {where} ORDER BY a.last_seen_at DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
         items = [
-            {"id": r["id"], "inn": r["inn"], "name": r["canonical_name"], "creatives_count": r["creatives_count"],
+            {"id": r["id"], "inn": r["inn"], "name": _clean_adv_name(r["canonical_name"], r["inn"]), "creatives_count": r["creatives_count"],
+             "vk_count": r["vk_count"], "yandex_count": r["creatives_count"] - r["vk_count"],
+             "sources": [x for x, n in (("yandex", r["creatives_count"] - r["vk_count"]), ("vk", r["vk_count"])) if n > 0],
              "address": r["address"], "phone": r["phone"], "website_url": r["website_url"],
              "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"]}
             for r in rows
@@ -3659,8 +3616,12 @@ def api_advertiser_creatives(inn: str, limit: int = 50, offset: int = 0, princip
                 "banner_ids": sorted(group["banner_ids"]),
                 "client_ids": sorted(group["client_ids"]),
             })
+        reps = [v["representative"] for v in variants]
+        _attach_vk(db, reps)
+    vk_rows = sum(1 for r in creative_rows if r["platform"] == "vk.com")
     return {
-        "advertiser": {"id": advertiser["id"], "inn": advertiser["inn"], "name": advertiser["canonical_name"]},
+        "advertiser": {"id": advertiser["id"], "inn": advertiser["inn"], "name": _clean_adv_name(advertiser["canonical_name"], advertiser["inn"])},
+        "by_source": {"yandex": len(creative_rows) - vk_rows, "vk": vk_rows},
         "variants": variants,
         "total_variants": len(order),
         "total_creative_rows": len(creative_rows),
@@ -3684,20 +3645,111 @@ def _attach_collections(db: sqlite3.Connection, items: list[dict[str, Any]], pri
         it["collections"] = found
 
 
-def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
+def _attach_stats(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
+    """Добавляет `stats`: когда объявление впервые и в последний раз встречено парсером, сколько
+    дней оно в открутке и сколько раз встречено. Одно и то же объявление (общий content_fingerprint)
+    считается вместе, даже если в базе оно лежит несколькими строками."""
+    def _day(value: str | None):
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+        except Exception:
+            return None
+    by_fp: dict[str, dict[str, Any]] = {}
+    by_id: dict[int, dict[str, Any]] = {}
+    fps = sorted({it["content_fingerprint"] for it in items if it.get("content_fingerprint")})
+    ids = [it["id"] for it in items if it.get("id") is not None and not it.get("content_fingerprint")]
+    sel = ("MIN(c.captured_at) AS c_first, MAX(c.captured_at) AS c_last, MIN(o.observed_at) AS o_first, "
+           "MAX(o.observed_at) AS o_last, COUNT(o.id) AS shows, COUNT(DISTINCT o.job_id) AS runs, "
+           "COUNT(DISTINCT o.platform) AS sites, "
+           "(SELECT COUNT(DISTINCT j.city) FROM occurrences o2 JOIN jobs j ON j.id=o2.job_id "
+           " JOIN creatives c2 ON c2.id=o2.creative_id WHERE {scope}) AS cities")
+    for i in range(0, len(fps), 400):
+        chunk = fps[i:i + 400]
+        for r in db.execute(
+            f"SELECT c.content_fingerprint AS k, {sel.format(scope='c2.content_fingerprint=c.content_fingerprint')} FROM creatives c LEFT JOIN occurrences o ON o.creative_id=c.id "
+            f"WHERE c.content_fingerprint IN ({','.join('?' * len(chunk))}) GROUP BY c.content_fingerprint", chunk):
+            by_fp[r["k"]] = dict(r)
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        for r in db.execute(
+            f"SELECT c.id AS k, {sel.format(scope='c2.id=c.id')} FROM creatives c LEFT JOIN occurrences o ON o.creative_id=c.id "
+            f"WHERE c.id IN ({','.join('?' * len(chunk))}) GROUP BY c.id", chunk):
+            by_id[r["k"]] = dict(r)
+    for it in items:
+        r = by_fp.get(it.get("content_fingerprint")) if it.get("content_fingerprint") else by_id.get(it.get("id"))
+        if not r:
+            continue
+        first = min(v for v in (r["c_first"], r["o_first"]) if v) if (r["c_first"] or r["o_first"]) else None
+        last = max(v for v in (r["c_last"], r["o_last"]) if v) if (r["c_last"] or r["o_last"]) else None
+        d1, d2 = _day(first), _day(last)
+        it["stats"] = {
+            "first_seen_at": first, "last_seen_at": last,
+            "days_active": ((d2 - d1).days + 1) if d1 and d2 else None,
+            "shows": max(int(r["shows"] or 0), 1), "runs": int(r["runs"] or 0),
+            "sites": int(r["sites"] or 0), "cities": int(r["cities"] or 0),
+        }
+    _attach_vk(db, items)
+
+
+def _attach_vk(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
+    """Добавляет `vk` VK-креативам: сообщество, дата публикации поста, сколько дней висит, статистика."""
+    ids = [it["id"] for it in items if it.get("platform") == "vk.com" and it.get("id") is not None]
+    if not ids:
+        return
+    rows: dict[int, dict[str, Any]] = {}
+    try:
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            for r in db.execute(f"SELECT * FROM vk_posts WHERE creative_id IN ({','.join('?' * len(chunk))})", chunk):
+                rows[r["creative_id"]] = dict(r)
+    except sqlite3.OperationalError:
+        return
+    now = datetime.now(timezone.utc)
+    for it in items:
+        r = rows.get(it.get("id"))
+        if not r:
+            continue
+        posted = None
+        try:
+            posted = datetime.fromisoformat(str(r["posted_at"]).replace("Z", "+00:00")) if r["posted_at"] else None
+        except Exception:
+            pass
+        last = None
+        try:
+            last = datetime.fromisoformat(str(r["last_seen_at"]).replace("Z", "+00:00"))
+        except Exception:
+            pass
+        it["vk"] = {
+            "format": r["format"], "post_url": r["post_url"], "posted_at": r["posted_at"] or None,
+            "days_since_post": (now - posted).days if posted else None,
+            # «висит»: от публикации до последнего раза, когда парсер видел пост в выдаче
+            "days_live": max(0, (last - posted).days) if posted and last else None,
+            "last_seen_at": r["last_seen_at"],
+            "owner": {"id": r["owner_id"], "name": r["owner_name"], "screen_name": r["owner_screen_name"],
+                      "members": r["owner_members"],
+                      "url": f"https://vk.com/{r['owner_screen_name']}" if r["owner_screen_name"] else
+                             (f"https://vk.com/club{abs(r['owner_id'])}" if r["owner_id"] and r["owner_id"] < 0 else "")},
+            "views": r["views"], "likes": r["likes"], "reposts": r["reposts"], "comments": r["comments"],
+        }
+
+
+def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]], owner_user_id: int | None = None) -> None:
     """Attaches `intents`: the distinct search queries (jobs.key_text) each creative was
     captured under, so the UI can show "this ad belongs to «X»" on every card/detail
     view regardless of whether intent-scoping is currently filtering the list or not."""
     ids = [item["id"] for item in items if item.get("id") is not None]
     if not ids:
         return
+    # Чужие запуски (и их ключевые слова) обычному пользователю не показываем: креатив из общей
+    # базы он видит, а кто и по какому запросу его нашёл — нет.
+    own, own_args = (" AND j.owner_user_id=?", [owner_user_id]) if owner_user_id is not None else ("", [])
     by_id: dict[int, list[str]] = {}
     for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
         placeholders = ",".join(["?"] * len(chunk))
         rows = db.execute(
             f"SELECT DISTINCT o.creative_id, j.key_text FROM occurrences o JOIN jobs j ON j.id=o.job_id "
-            f"WHERE o.creative_id IN ({placeholders}) AND j.key_text IS NOT NULL AND j.key_text<>''",
-            chunk,
+            f"WHERE o.creative_id IN ({placeholders}) AND j.key_text IS NOT NULL AND j.key_text<>''{own}",
+            chunk + own_args,
         ).fetchall()
         for row in rows:
             by_id.setdefault(row["creative_id"], []).append(row["key_text"])
@@ -3709,9 +3761,9 @@ def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None
         placeholders = ",".join(["?"] * len(chunk))
         for row in db.execute(
             f"SELECT o.creative_id, j.id AS job_id, j.key_text, j.city, j.status, MAX(o.observed_at) AS seen_at "
-            f"FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE o.creative_id IN ({placeholders}) "
+            f"FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE o.creative_id IN ({placeholders}){own} "
             f"GROUP BY o.creative_id, j.id ORDER BY j.id DESC",
-            chunk,
+            chunk + own_args,
         ).fetchall():
             runs_by_id.setdefault(row["creative_id"], []).append({
                 "job_id": row["job_id"], "key_text": row["key_text"], "city": row["city"],
@@ -3720,23 +3772,43 @@ def _attach_intents(db: sqlite3.Connection, items: list[dict[str, Any]]) -> None
     ai_by_id: dict[int, Any] = {}
     for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
         placeholders = ",".join(["?"] * len(chunk))
-        for row in db.execute(f"SELECT id, ai_intent FROM creatives WHERE id IN ({placeholders})", chunk).fetchall():
-            ai_by_id[row["id"]] = row["ai_intent"]
+        for row in db.execute(f"SELECT id, ai_intent, ai_intent_main, ai_intent_sub FROM creatives WHERE id IN ({placeholders})", chunk).fetchall():
+            ai_by_id[row["id"]] = (row["ai_intent"], row["ai_intent_main"], row["ai_intent_sub"])
     for item in items:
         item["runs"] = runs_by_id.get(item.get("id"), [])[:20]
-        item["ai_intent"] = ai_by_id.get(item.get("id"))  # None = ещё не определён
+        ai, ai_main, ai_sub = ai_by_id.get(item.get("id")) or (None, None, None)
+        item["ai_intent"] = ai  # None = ещё не определён
+        item["ai_intent_main"] = ai_main  # основной интент (раздел таксономии)
+        item["ai_intent_sub"] = ai_sub    # под-интент (подрубрика)
+
+
+# user_id -> (время, интенты, подходящие под ключевые слова последних запусков пользователя); живёт 5 минут
+_USER_HISTORY_INTENTS: dict[int, tuple[float, list[str]]] = {}
 
 
 @app.get("/api/v1/creatives")
 def api_list_creatives(
     inn: str = "", platform: str = "", q: str = "", status: str = "", job_id: int | None = None,
     has_advertiser: bool | None = None, has_app: bool | None = None, has_discount: bool | None = None,
-    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "", ai_intent: str = "", only_relevant: str = "",
+    campaign_id: str = "", utm_campaign: str = "", keyword: str = "", intent: str = "", ai_intent: str = "", only_relevant: str = "", history: str = "",
+    ai_tree: str = "",
     date_from: str = "", date_to: str = "",
     sort: str = "recent", limit: int = 50, offset: int = 0,
+    source: str = "", group: str = "", platform_label: str = "", format: str = "", ids: str = "", exclude_ids: str = "",
+    feature: str = "",
     principal: dict = Depends(public_api_principal),
 ):
-    limit, offset = _paging(limit, offset)
+    """source — откуда креативы: own (свои запуски), history (подходящие по интенту из общей базы,
+    найденные не в своих запусках), all (и то и другое), db (вся база — только администратор).
+    group=1 — одно объявление = одна карточка (общий content_fingerprint), постраничность по карточкам."""
+    limit, offset = max(1, min(limit, 200)), max(0, offset)
+    user_id = principal.get("user_id") if principal.get("kind") == "user" else None
+    is_admin = _console.is_platform_admin(principal)
+    source = (source or "").strip().lower()
+    if source not in ("own", "history", "all", "db"):
+        source = ("all" if history in ("1", "yes", "true") else "own") if (job_id is not None or not is_admin) else "db"
+    if source == "db" and not is_admin:
+        source = "own"
     with closing(connect()) as db:
         joins = []
         where_parts = []
@@ -3763,6 +3835,10 @@ def api_list_creatives(
             else:
                 where_parts.append(f"PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ai_list))})")
                 params.extend(ai_list)
+        tree_sql, tree_params = _ai_tree_where(ai_tree)
+        if tree_sql:
+            where_parts.append(tree_sql)
+            params.extend(tree_params)
         if inn:
             joins.append("JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id")
             where_parts.append("a.inn=?")
@@ -3774,6 +3850,17 @@ def api_list_creatives(
             where_parts.append("(COALESCE(c.app_package_id,'')<>'' OR COALESCE(c.app_store_id,'')<>'')")
         if has_discount:
             where_parts.append("c.discount_percent IS NOT NULL")
+        # feature — признак из разметки объявления (creative_details), можно несколько через запятую
+        _feature_sql = {
+            "promo": "COALESCE(cd.promo_text,'')<>''", "social": "cd.is_social=1", "warning": "COALESCE(cd.warning,'')<>''",
+            "age": "COALESCE(cd.age_label,'')<>''", "old_price": "COALESCE(cd.price_old,'')<>''",
+            "offers": "COALESCE(cd.offers_json,'')<>''", "callouts": "COALESCE(cd.callouts_json,'')<>''",
+            "gallery": "cd.ad_format='gallery'", "app": "cd.ad_format='app'", "ad_id": "COALESCE(cd.ad_id,'')<>''",
+        }
+        _features = [f for f in (feature or "").split(",") if f.strip() in _feature_sql]
+        if _features:
+            joins.append("JOIN creative_details cd ON cd.creative_id=c.id")
+            where_parts.extend(_feature_sql[f.strip()] for f in _features)
         if campaign_id:
             joins.append(
                 "JOIN creative_identifiers ci_campaign ON ci_campaign.creative_id=c.id "
@@ -3790,21 +3877,83 @@ def api_list_creatives(
             where_parts.append("cu_keyword.utm_term=?")
             params.append(keyword)
         job_rel: dict[int, bool | None] | None = None
+        history_intents: list[str] = []
+        jrow = None
         if job_id is not None:
-            joins.append("JOIN occurrences jo ON jo.creative_id=c.id")
-            where_parts.append("jo.job_id=?")
-            params.append(job_id)
-            jrow = db.execute("SELECT key_text FROM jobs WHERE id=?", (job_id,)).fetchone()
+            jrow = db.execute("SELECT key_text,owner_user_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if jrow and not is_admin and jrow["owner_user_id"] != user_id:
+                raise HTTPException(status_code=404, detail="Запуск не найден")
+            own_sql, own_params = "c.id IN (SELECT creative_id FROM occurrences WHERE job_id=?)", [job_id]
             if jrow:
                 job_rel = _job_relevance(db, job_id, jrow["key_text"])["ids"]
-                if only_relevant in ("1", "yes", "true"):
-                    keep = [i for i, v in job_rel.items() if v is True] or [-1]
-                    where_parts.append(f"c.id IN ({','.join(['?'] * len(keep))})")
-                    params.extend(keep)
-                elif only_relevant == "no":
-                    keep = [i for i, v in job_rel.items() if v is False] or [-1]
-                    where_parts.append(f"c.id IN ({','.join(['?'] * len(keep))})")
-                    params.extend(keep)
+                history_intents = _history_intents(db, jrow["key_text"])
+        else:
+            own_sql = "c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)"
+            own_params = [user_id if user_id is not None else -1]
+            if source != "db" and user_id is not None:
+                cached = _USER_HISTORY_INTENTS.get(user_id)
+                if cached and time.time() - cached[0] < 300:
+                    history_intents = cached[1]
+                else:
+                    seen_i: set[str] = set()
+                    for kr in db.execute("SELECT key_text, MAX(id) m FROM jobs WHERE owner_user_id=? AND key_text<>'' GROUP BY PYLOWER(key_text) ORDER BY m DESC LIMIT 20", (user_id,)).fetchall():
+                        seen_i.update(_history_intents(db, kr["key_text"]))
+                    history_intents = sorted(seen_i)[:600]
+                    _USER_HISTORY_INTENTS[user_id] = (time.time(), history_intents)
+        hist_sql = f"PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(history_intents))})" if history_intents else "0"
+
+        def _source_clause(src: str) -> tuple[str, list[Any]]:
+            """Условие «откуда креативы» + фильтр «по интенту / не по интенту» для своего запуска."""
+            if src == "db":
+                return "", []
+            rel_sql, rel_params = "", []
+            if job_rel is not None and only_relevant in ("1", "yes", "true", "no"):
+                want = only_relevant != "no"
+                keep = [i for i, v in job_rel.items() if v is want] or [-1]
+                rel_sql, rel_params = f" AND c.id IN ({','.join(['?'] * len(keep))})", keep
+            own_part, own_p = f"({own_sql}{rel_sql})", own_params + rel_params
+            hist_part, hist_p = f"({hist_sql} AND NOT {own_sql})", list(history_intents) + own_params
+            if only_relevant == "no":  # исторические подобраны по интенту — среди «не по интенту» их нет
+                hist_part, hist_p = "0", []
+            if src == "own":
+                return own_part, own_p
+            if src == "history":
+                return hist_part, hist_p
+            return f"({own_part} OR {hist_part})", own_p + hist_p
+
+        if platform_label:
+            prefix = {"VK Ads": "vk-native", "Google Ads": "google-ads", "Taboola": "taboola", "Яндекс Дзен": "native-feed",
+                      "VK · Реклама от автора": "vk-search", "VK · лента": "vk-feed"}
+            ors, has_rsya = [], False
+            for lab in [x.strip() for x in platform_label.split(",") if x.strip()]:
+                if lab in prefix:
+                    ors.append("COALESCE(c.detection_method,'') LIKE ?")
+                    params.append(prefix[lab] + "%")
+                else:
+                    has_rsya = True
+            if has_rsya:
+                ors.append("(" + " AND ".join(["COALESCE(c.detection_method,'') NOT LIKE ?"] * len(prefix)) + ")")
+                params.extend(v + "%" for v in prefix.values())
+            if ors:
+                where_parts.append("(" + " OR ".join(ors) + ")")
+        if format:
+            video = "(c.creative_type='video' OR COALESCE(c.video_src,'')<>'')"
+            fsql = {"video": video, "carousel": f"(NOT {video} AND c.carousel_id IS NOT NULL)",
+                    "image": f"(NOT {video} AND c.carousel_id IS NULL AND COALESCE(c.image_url,'')<>'')",
+                    "native": f"(NOT {video} AND c.carousel_id IS NULL AND COALESCE(c.image_url,'')='')"}
+            fors = [fsql[x] for x in format.split(",") if x in fsql]
+            if fors:
+                where_parts.append("(" + " OR ".join(fors) + ")")
+        for raw, neg in ((ids, False), (exclude_ids, True)):
+            if raw:
+                id_list = [int(x) for x in raw.split(",") if x.strip().isdigit()][:2000]
+                if id_list or not neg:
+                    # избранное хранится по id карточки, а карточка — это всё объявление целиком (общий отпечаток)
+                    qm = ",".join(["?"] * len(id_list)) or "-1"
+                    where_parts.append(
+                        f"{'NOT ' if neg else ''}(c.id IN ({qm}) OR (c.content_fingerprint<>'' AND c.content_fingerprint IN "
+                        f"(SELECT content_fingerprint FROM creatives WHERE id IN ({qm}))))")
+                    params.extend(id_list + id_list)
         if platform:
             where_parts.append("c.platform=?")
             params.append(platform)
@@ -3819,27 +3968,85 @@ def api_list_creatives(
             params.append(date_from)
         if date_to:
             where_parts.append("c.captured_at<=?")
-            params.append(date_to)
+            params.append(date_to + "T23:59:59" if len(date_to) == 10 else date_to)  # дата без времени = весь этот день
         join_sql = " ".join(joins)
-        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-        order_sql = {
-            "recent": "c.captured_at DESC",
-            "oldest": "c.captured_at ASC",
-            "domain": "c.domain ASC, c.captured_at DESC",
-            "discount": "c.discount_percent DESC, c.captured_at DESC",
-        }.get(sort, "c.captured_at DESC")
-        total = db.execute(f"SELECT COUNT(DISTINCT c.id) FROM creatives c {join_sql} {where}", params).fetchone()[0]
-        rows = db.execute(
-            f"SELECT DISTINCT c.* FROM creatives c {join_sql} {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
-            params + [limit, offset],
-        ).fetchall()
+        grouped = group in ("1", "yes", "true")
+        gk = "COALESCE(NULLIF(c.content_fingerprint,''),'hash:'||c.creative_hash)"
+
+        def _where(src: str) -> tuple[str, list[Any]]:
+            sc, sp = _source_clause(src)
+            parts = where_parts + ([sc] if sc else [])
+            return (("WHERE " + " AND ".join(parts)) if parts else ""), params + sp
+
+        def _count(src: str) -> int:
+            w, p = _where(src)
+            what = f"COUNT(DISTINCT {gk})" if grouped else "COUNT(DISTINCT c.id)"
+            return db.execute(f"SELECT {what} FROM creatives c {join_sql} {w}", p).fetchone()[0]
+
+        where, wparams = _where(source)
+        total = _count(source)
+        if grouped:
+            order_sql = {
+                "recent": "captured_at DESC, id DESC", "oldest": "captured_at ASC, id ASC",
+                "domain": "domain ASC, captured_at DESC", "discount": "discount_percent DESC, captured_at DESC",
+            }.get(sort, "captured_at DESC, id DESC")
+            id_rows = db.execute(
+                f"WITH f AS (SELECT DISTINCT c.id, c.captured_at, c.domain, c.discount_percent, {gk} AS gk FROM creatives c {join_sql} {where}), "
+                "r AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY gk ORDER BY captured_at DESC, id DESC) AS rn FROM f) "
+                f"SELECT id FROM r WHERE rn=1 ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                wparams + [limit, offset],
+            ).fetchall()
+            page_ids = [r["id"] for r in id_rows]
+            by_id = {r["id"]: r for r in db.execute(
+                f"SELECT * FROM creatives WHERE id IN ({','.join(['?'] * len(page_ids)) or '-1'})", page_ids).fetchall()}
+            rows = [by_id[i] for i in page_ids if i in by_id]
+        else:
+            order_sql = {
+                "recent": "c.captured_at DESC",
+                "oldest": "c.captured_at ASC",
+                "domain": "c.domain ASC, c.captured_at DESC",
+                "discount": "c.discount_percent DESC, c.captured_at DESC",
+            }.get(sort, "c.captured_at DESC")
+            rows = db.execute(
+                f"SELECT DISTINCT c.* FROM creatives c {join_sql} {where} ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                wparams + [limit, offset],
+            ).fetchall()
         items = [_creative_row_to_dict(r) for r in rows]
-        _attach_intents(db, items)
+        _attach_intents(db, items, None if is_admin else user_id)
+        _attach_stats(db, items)
         _attach_collections(db, items, principal)
-        if job_rel is not None:
+        if grouped and items:
+            fps = [it["content_fingerprint"] for it in items if it.get("content_fingerprint")]
+            plats: dict[str, set[str]] = {}
+            for r in db.execute(
+                f"SELECT content_fingerprint AS fp, detection_method AS dm FROM creatives WHERE content_fingerprint IN ({','.join(['?'] * len(fps)) or "''"}) "
+                "GROUP BY content_fingerprint, detection_method", fps).fetchall():
+                plats.setdefault(r["fp"], set()).add(r["dm"] or "")
             for it in items:
-                it["job_match"] = job_rel.get(it["id"])  # True — по теме, False — не по теме, None — ещё определяется
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+                it["group_methods"] = sorted(plats.get(it.get("content_fingerprint") or "", set()))
+        if source != "db" and items:
+            item_ids = [it["id"] for it in items]
+            own_ids = {r["id"] for r in db.execute(
+                f"SELECT c.id FROM creatives c WHERE c.id IN ({','.join(['?'] * len(item_ids))}) AND {own_sql}", item_ids + own_params).fetchall()}
+            for it in items:
+                it["from_history"] = it["id"] not in own_ids  # найден не в своих запусках, а подобран по интенту из общей базы
+                if job_rel is not None:
+                    it["job_match"] = True if it["from_history"] else job_rel.get(it["id"])  # True — по теме, False — нет, None — определяется
+        counts = None
+        if source != "db":
+            counts = {"own": _count("own") if source != "own" else total,
+                      "history": _count("history") if source != "history" else total}
+            counts["all"] = total if source == "all" else _count("all")
+            if job_rel is not None:
+                vals = list(job_rel.values())
+                counts["job"] = {"found": len(vals), "relevant": sum(1 for v in vals if v is True),
+                                 "irrelevant": sum(1 for v in vals if v is False), "pending": sum(1 for v in vals if v is None)}
+        job_info = None
+        if job_id is not None and jrow:
+            jfull = db.execute("SELECT id,key_text,city,status,created_at FROM jobs WHERE id=?", (job_id,)).fetchone()
+            job_info = dict(jfull) if jfull else None
+    return {"items": items, "total": total, "limit": limit, "offset": offset, "source": source, "counts": counts,
+            "is_admin": is_admin, "job": job_info}
 
 
 @app.get("/api/v1/platforms")
@@ -3847,6 +4054,65 @@ def api_list_platforms(principal: dict = Depends(public_api_principal)):
     with closing(connect()) as db:
         rows = db.execute("SELECT platform, COUNT(*) n FROM creatives GROUP BY platform ORDER BY n DESC").fetchall()
     return {"items": [{"platform": r["platform"], "creatives_count": r["n"]} for r in rows]}
+
+
+def _ai_tree_where(ai_tree: str) -> tuple[str, list[Any]]:
+    """ai_tree — выбор в дереве фильтра: элементы через «~», уровни через «>» (раздел>подрубрика>интент)
+    («Юристы~Хозяйство и уборка>Химчистка одежды»). Элемент без «>» — весь раздел. Внутри — ИЛИ."""
+    parts, params = [], []
+    for item in (ai_tree or "").split("~"):
+        main, _, rest = item.partition(">")
+        sub, _, intent = rest.partition(">")
+        main, sub, intent = main.strip(), sub.strip(), intent.strip().lower()
+        if not main:
+            continue
+        if sub and intent:  # третий уровень — конкретный интент Gemini внутри подрубрики
+            parts.append("(c.ai_intent_main=? AND c.ai_intent_sub=? AND PYLOWER(c.ai_intent)=?)")
+            params += [main, sub, intent]
+        elif sub:
+            parts.append("(c.ai_intent_main=? AND c.ai_intent_sub=?)")
+            params += [main, sub]
+        else:
+            parts.append("c.ai_intent_main=?")
+            params.append(main)
+    return (("(" + " OR ".join(parts) + ")") if parts else ""), params
+
+
+@app.get("/api/v1/ai-intent-tree")
+def api_ai_intent_tree(job_id: int | None = None, intents: int = 1, principal: dict = Depends(public_api_principal)):
+    """Дерево для фильтра: основной интент (раздел) → под-интент (подрубрика) → интенты Gemini, с числом креативов.
+    С job_id — только креативы этого запуска. Пустые разделы не возвращаются (полный список — /api/v1/ai-taxonomy)."""
+    require_user_principal(principal)
+    scope = " AND c.id IN (SELECT creative_id FROM occurrences WHERE job_id=?)" if job_id is not None else ""
+    args: list[Any] = [job_id] if job_id is not None else []
+    with closing(connect()) as db:
+        rows = db.execute(
+            "SELECT c.ai_intent_main AS m, c.ai_intent_sub AS s, PYLOWER(c.ai_intent) AS i, COUNT(*) AS n FROM creatives c "
+            "WHERE c.ai_intent_main IS NOT NULL" + scope + " GROUP BY 1,2,3", args).fetchall()
+        pending = db.execute("SELECT COUNT(*) FROM creatives c WHERE c.ai_intent_main IS NULL" + scope, args).fetchone()[0]
+    order = {r["main"]: k for k, r in enumerate(taxonomy.taxonomy())}
+    tree: dict[str, dict] = {}
+    for r in rows:
+        mn = tree.setdefault(r["m"], {"main": r["m"], "count": 0, "subs": {}})
+        mn["count"] += r["n"]
+        sb = mn["subs"].setdefault(r["s"], {"sub": r["s"], "count": 0, "intents": {}})
+        sb["count"] += r["n"]
+        if intents and r["i"]:
+            sb["intents"][r["i"]] = sb["intents"].get(r["i"], 0) + r["n"]
+    items = []
+    for mn in sorted(tree.values(), key=lambda x: (x["main"] == "Не определено", -x["count"], order.get(x["main"], 999))):
+        subs = sorted(mn["subs"].values(), key=lambda x: (x["sub"] == "Другое", -x["count"]))
+        for sb in subs:
+            sb["intents"] = [{"intent": k, "count": v} for k, v in sorted(sb["intents"].items(), key=lambda kv: -kv[1])][:50]
+        items.append({"main": mn["main"], "count": mn["count"], "subs": subs})
+    return {"items": items, "pending": pending, "job_id": job_id}
+
+
+@app.get("/api/v1/ai-taxonomy")
+def api_ai_taxonomy(principal: dict = Depends(public_api_principal)):
+    """Полная таксономия интентов (Яндекс Услуги + Яндекс Маркет + доп. разделы)."""
+    require_user_principal(principal)
+    return {"items": taxonomy.taxonomy()}
 
 
 @app.get("/api/v1/ai-intents")
@@ -3904,6 +4170,100 @@ def api_list_intents(principal: dict = Depends(public_api_principal)):
     return {"items": items}
 
 
+def _history_intents(db: sqlite3.Connection, key_text: str) -> list[str]:
+    """Интенты креативов (в нижнем регистре), подходящие под ключевое слово: совпала основа слова
+    либо Gemini признал пару «ключевое слово → интент» подходящей. По ним подбираем исторические
+    креативы из других запусков для показа вместе с результатами текущего."""
+    kw_stems = _intent_stems(key_text)
+    matched = {r["intent_key"] for r in db.execute(
+        "SELECT intent_key FROM intent_keyword_match WHERE keyword_key=? AND match=1", (_pylower(key_text),)).fetchall()}
+    out = set(matched)
+    for r in db.execute("SELECT DISTINCT ai_intent FROM creatives WHERE ai_intent IS NOT NULL AND ai_intent<>?", (aii.UNKNOWN,)).fetchall():
+        intent = r["ai_intent"]
+        if kw_stems & _intent_stems(intent):
+            out.add(_pylower(intent))
+    return sorted(out)[:400]
+
+
+def _landing_url_key(url: str) -> tuple[str, str]:
+    """(ключ страницы, домен) — так же, как в landing_parser.py: без www/m, без параметров."""
+    try:
+        parts = urlsplit(url)
+        host = re.sub(r"^(www|m)\.", "", (parts.hostname or "").lower())
+        return f"{host}{(parts.path or '/').rstrip('/') or '/'}"[:500], host
+    except Exception:
+        return "", ""
+
+
+def _norm_legal_name(name: str) -> str:
+    text = re.sub(r"[«»\"“”„'‘’\.,]", " ", (name or "").lower())
+    text = re.sub(r"\b(ооо|оао|зао|пао|нао|ао|ип|общество с ограниченной ответственностью|акционерное общество|"
+                  r"публичное акционерное общество|индивидуальный предприниматель)\b", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _landing_block(db, utm: dict | None, advertisers: list[dict]) -> dict | None:
+    """Блок «Посадочная страница и юрлицо» для карточки креатива: что на сайте, чей это сайт и
+    совпадает ли владелец сайта с рекламодателем из маркировки объявления.
+    Данные собирает landing_parser.py (таблицы landing_pages / landing_legal)."""
+    if not utm or not (utm.get("final_url") or "").startswith("http"):
+        return None
+    key, domain = _landing_url_key(utm["final_url"])
+    try:
+        page = db.execute("SELECT * FROM landing_pages WHERE url_key=?", (key,)).fetchone()
+        if not page:  # эту страницу не разбирали — берём любую страницу того же сайта (название сайта общее)
+            page = db.execute("SELECT * FROM landing_pages WHERE domain=? AND status='ok' ORDER BY LENGTH(url_key) LIMIT 1", (domain,)).fetchone()
+            same_page = False
+        else:
+            same_page = True
+        legal = db.execute("SELECT * FROM landing_legal WHERE domain=?", (domain,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not page and not legal:
+        return {"domain": domain, "status": "pending"}
+    out: dict[str, Any] = {
+        "domain": domain, "status": (page["status"] if page else "pending"),
+        "site_name": (page["site_name"] if page else "") or "",
+        "page_title": (page["page_title"] if page and same_page else "") or "",
+        "h1": (page["h1"] if page and same_page else "") or "",
+        "http_status": page["http_status"] if page else None,
+        "fetched_at": (page["fetched_at"] if page else None),
+        "domain_mismatch": bool(utm.get("landing_domain_mismatch")),
+        "advertised_site_domain": utm.get("advertised_site_domain") or "",
+        "legal": None, "compare": {"status": "no_data", "text": "Нет данных для сравнения"},
+    }
+    site_inn = ""
+    if legal:
+        out["legal"] = {
+            "status": legal["status"], "name": legal["legal_name"] or "", "inn": legal["inn"] or "",
+            "ogrn": legal["ogrn"] or "", "kpp": legal["kpp"] or "", "source_url": legal["source_url"] or "",
+            "source_kind": legal["source_kind"] or "", "confidence": legal["confidence"] or "",
+            "other_inns": [x for x in (legal["other_inns"] or "").split(",") if x],
+        }
+        site_inn = legal["inn"] or ""
+    ad = [a for a in advertisers if (a.get("inn") or "").strip()]
+    ad_inns = {a["inn"].strip() for a in ad}
+    if legal and legal["status"] == "platform":
+        out["compare"] = {"status": "platform", "text": "Реклама ведёт на стороннюю площадку (маркетплейс, магазин приложений, соцсеть) — реквизиты сайта не сравниваются"}
+    elif site_inn and ad_inns:
+        others = set(out["legal"]["other_inns"])
+        if site_inn in ad_inns:
+            out["compare"] = {"status": "match", "text": "ИНН на сайте совпадает с ИНН рекламодателя из объявления"}
+        elif ad_inns & others:
+            out["compare"] = {"status": "partial", "text": "ИНН рекламодателя есть на сайте, но основным юрлицом сайта указано другое"}
+        else:
+            ad_names = {_norm_legal_name(a.get("canonical_name") or "") for a in ad}
+            same_name = _norm_legal_name(out["legal"]["name"]) in ad_names and bool(_norm_legal_name(out["legal"]["name"]))
+            out["compare"] = {"status": "mismatch", "text": (
+                "ИНН на сайте и в объявлении разные" + (", хотя название юрлица совпадает" if same_name else "")
+                + ": рекламу размещает одно юрлицо, а сайт принадлежит другому (агентство, партнёр, группа компаний или подмена)")}
+    elif site_inn and not ad_inns:
+        out["compare"] = {"status": "site_only", "text": "В объявлении рекламодатель не раскрыт — юрлицо известно только по сайту"}
+    elif ad_inns and legal and legal["status"] == "not_found":
+        out["compare"] = {"status": "ad_only", "text": "На сайте реквизиты не найдены — юрлицо известно только из маркировки объявления"}
+    return out
+
+
 @app.get("/api/v1/creatives/{creative_id}")
 def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_principal)):
     with closing(connect()) as db:
@@ -3942,9 +4302,19 @@ def api_creative_detail(creative_id: int, principal: dict = Depends(public_api_p
             (creative_id,),
         ).fetchall()
         creative_dict = _creative_row_to_dict(row)
-        _attach_intents(db, [creative_dict])
+        _attach_intents(db, [creative_dict], principal.get("user_id") if not _console.is_platform_admin(principal) else None)
+        _attach_stats(db, [creative_dict])
+        landing = _landing_block(db, dict(utm_row) if utm_row else None, [dict(r) for r in advertisers])
+        details = _creative_details(db, creative_id)
+        try:
+            impressions = _creative_impressions(db, str(row["creative_hash"] or ""))
+        except Exception:
+            impressions = None
     return {
         "creative": creative_dict,
+        "details": details,
+        "impressions": impressions,
+        "landing": landing,
         "advertisers": [dict(r) for r in advertisers],
         "identifiers": [dict(r) for r in identifiers],
         "occurrences": [dict(r) for r in occurrences],
@@ -3961,13 +4331,56 @@ def require_user_principal(principal: dict) -> int:
 
 
 @app.post("/api/v1/auth/change-password")
-def api_change_password(payload: ChangePasswordIn, principal: dict = Depends(public_api_principal)):
+def api_change_password(payload: ChangePasswordIn, principal: dict = Depends(public_api_principal),
+                        authorization: str | None = Header(default=None)):
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
         row = db.execute("SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()
         if not row or not verify_password(payload.current_password, row["password_hash"]):
             raise HTTPException(status_code=401, detail="Текущий пароль указан неверно")
         db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(payload.new_password), user_id))
+        # после смены пароля остальные входы закрываем: если пароль утёк, старые сессии не должны жить
+        revoked = db.execute("DELETE FROM user_tokens WHERE user_id=? AND token_hash<>?",
+                             (user_id, _current_token_hash(authorization))).rowcount or 0
+        db.commit()
+    return {"ok": True, "revoked_sessions": revoked}
+
+
+def _current_token_hash(authorization: str | None) -> str:
+    if authorization and authorization.startswith("Bearer "):
+        return hashlib.sha256(authorization[7:].strip().encode("utf-8")).hexdigest()
+    return ""
+
+
+@app.get("/api/v1/profile/sessions")
+def api_profile_sessions(principal: dict = Depends(public_api_principal), authorization: str | None = Header(default=None)):
+    """Действующие входы пользователя. Устройство не записывается — только когда вошли и до какого срока."""
+    user_id = require_user_principal(principal)
+    cur = _current_token_hash(authorization)
+    with closing(connect()) as db:
+        rows = db.execute("SELECT token_hash,created_at,expires_at FROM user_tokens WHERE user_id=? AND expires_at>=? "
+                          "ORDER BY created_at DESC", (user_id, now_iso())).fetchall()
+    return {"items": [{"id": r["token_hash"][:16], "created_at": r["created_at"], "expires_at": r["expires_at"],
+                       "current": r["token_hash"] == cur} for r in rows]}
+
+
+@app.post("/api/v1/auth/logout-others")
+def api_logout_others(principal: dict = Depends(public_api_principal), authorization: str | None = Header(default=None)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        n = db.execute("DELETE FROM user_tokens WHERE user_id=? AND token_hash<>?",
+                       (user_id, _current_token_hash(authorization))).rowcount or 0
+        db.commit()
+    return {"ok": True, "revoked": n}
+
+
+@app.delete("/api/v1/profile/sessions/{session_id}")
+def api_revoke_session(session_id: str, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    if not re.fullmatch(r"[0-9a-f]{16}", session_id or ""):
+        raise HTTPException(status_code=400, detail="Некорректный идентификатор входа")
+    with closing(connect()) as db:
+        db.execute("DELETE FROM user_tokens WHERE user_id=? AND token_hash LIKE ?", (user_id, session_id + "%"))
         db.commit()
     return {"ok": True}
 
@@ -3977,10 +4390,17 @@ def api_get_profile(principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
         row = db.execute(
-            "SELECT email,role,name,avatar_data_url,notification_prefs FROM users WHERE id=?", (user_id,)
+            "SELECT email,role,name,avatar_data_url,notification_prefs,created_at,last_login_at FROM users WHERE id=?", (user_id,)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Пользователь не найден")
+        one = lambda q: db.execute(q, (user_id,)).fetchone()[0] or 0
+        stats = {
+            "runs": one("SELECT COUNT(*) FROM jobs WHERE owner_user_id=?"),
+            "creatives": one("SELECT COALESCE(SUM(total_creatives),0) FROM jobs WHERE owner_user_id=?"),
+            "collections": one("SELECT COUNT(*) FROM collections WHERE owner_user_id=?"),
+            "schedules": one("SELECT COUNT(*) FROM scan_schedules WHERE owner_user_id=? AND status IN ('active','paused')"),
+        }
     prefs = {}
     if row["notification_prefs"]:
         try:
@@ -3990,6 +4410,7 @@ def api_get_profile(principal: dict = Depends(public_api_principal)):
     return {
         "email": row["email"], "role": row["role"], "name": row["name"] or "",
         "avatar_data_url": row["avatar_data_url"] or "", "notification_prefs": prefs,
+        "created_at": row["created_at"], "last_login_at": row["last_login_at"], "stats": stats,
     }
 
 
@@ -4060,13 +4481,14 @@ def api_create_run(payload: RunCreateIn, principal: dict = Depends(public_api_pr
         ).fetchone()[0]
         if active >= MAX_MANUAL_RUNS:
             raise HTTPException(status_code=429, detail=f"У вас уже {MAX_MANUAL_RUNS} запусков в очереди/выполняются — подождите их завершения")
+        variant = payload.source if payload.source != "yandex" else None
         cur = db.execute(
-            "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id) VALUES('queued',?,?,?,?)",
-            (city, key_text, now_iso(), user_id),
+            "INSERT INTO jobs(status,city,key_text,created_at,owner_user_id,variant) VALUES('queued',?,?,?,?,?)",
+            (city, key_text, now_iso(), user_id, variant),
         )
         job_id = cur.lastrowid
         db.commit()
-    return {"id": job_id, "status": "queued", "city": city, "key_text": key_text}
+    return {"id": job_id, "status": "queued", "city": city, "key_text": key_text, "source": payload.source}
 
 
 class ScheduleCreateIn(BaseModel):
@@ -4074,6 +4496,7 @@ class ScheduleCreateIn(BaseModel):
     key_text: str = Field(min_length=1, max_length=300)
     runs_per_day: int = Field(ge=1, le=24)
     duration_days: int
+    source: str = Field(default="yandex", pattern="^(yandex|vk|vk\\+feed)$")
 
 
 def _schedule_dict(r) -> dict[str, Any]:
@@ -4098,10 +4521,10 @@ def api_create_schedule(payload: ScheduleCreateIn, principal: dict = Depends(pub
         if active >= MAX_ACTIVE_SCHEDULES:
             raise HTTPException(status_code=429, detail=f"Уже {MAX_ACTIVE_SCHEDULES} активных расписаний — остановите ненужные")
         cur = db.execute(
-            "INSERT INTO scan_schedules(owner_user_id,city,key_text,runs_per_day,duration_days,created_at,end_at,next_run_at) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO scan_schedules(owner_user_id,city,key_text,runs_per_day,duration_days,created_at,end_at,next_run_at,source) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
             (user_id, city, key_text, payload.runs_per_day, payload.duration_days, now.isoformat(),
-             (now + timedelta(days=payload.duration_days)).isoformat(), now.isoformat()),
+             (now + timedelta(days=payload.duration_days)).isoformat(), now.isoformat(), payload.source),
         )
         db.commit()
         sid = cur.lastrowid
@@ -4287,12 +4710,13 @@ def api_list_runs(limit: int = 25, offset: int = 0, schedule_id: int | None = No
             args.append(schedule_id)
         total = db.execute(f"SELECT COUNT(*) FROM jobs WHERE {flt}", args).fetchone()[0]
         rows = db.execute(
-            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text,schedule_id,attempts,retry_at "
+            "SELECT id,status,city,key_text,created_at,started_at,finished_at,total_creatives,error_text,schedule_id,attempts,retry_at,variant "
             f"FROM jobs WHERE {flt} ORDER BY id DESC LIMIT ? OFFSET ?",
             (*args, limit, offset),
         ).fetchall()
         items = [dict(r) for r in rows]
         for it in items:
+            it["source"] = _job_source(it.pop("variant", None))
             if (it.get("total_creatives") or 0) > 0 or it["status"] in ("running", "succeeded"):
                 it["relevance"] = _relevance_public(_job_relevance(db, it["id"], it["key_text"]))
             if it["status"] == "running":
@@ -4317,6 +4741,7 @@ def api_run_detail(job_id: int, principal: dict = Depends(public_api_principal))
         "id": job["id"], "status": job["status"], "city": job["city"], "key_text": job["key_text"],
         "created_at": job["created_at"], "started_at": job["started_at"], "finished_at": job["finished_at"],
         "total_creatives": job["total_creatives"], "error_text": job["error_text"],
+        "source": _job_source(job["variant"] if "variant" in job.keys() else None),
         "relevance": relevance,
         "sites": [dict(r) for r in sites],
     }
@@ -4332,7 +4757,14 @@ def api_list_collections(principal: dict = Depends(public_api_principal)):
             "FROM collections c WHERE c.owner_user_id=? ORDER BY c.created_at DESC",
             (user_id,),
         ).fetchall()
-    return {"items": [dict(r) for r in rows]}
+        items = [dict(r) for r in rows]
+        for it in items:
+            sub = db.execute(
+                "SELECT c.image_url, i.added_at FROM collection_items i JOIN creatives c ON c.id=i.representative_creative_id "
+                "WHERE i.collection_id=? ORDER BY i.added_at DESC LIMIT 12", (it["id"],)).fetchall()
+            it["updated_at"] = sub[0]["added_at"] if sub else it["created_at"]
+            it["thumbs"] = [r["image_url"] for r in sub if r["image_url"]][:4]
+    return {"items": items}
 
 
 @app.post("/api/v1/collections")
@@ -4383,7 +4815,91 @@ def api_list_collection_items(collection_id: int, principal: dict = Depends(publ
         d["group_key"] = r["group_key"]
         d["added_at"] = r["added_at"]
         items.append(d)
+    with closing(connect()) as db:
+        _attach_stats(db, items)
+        _attach_intents(db, items, None if _console.is_platform_admin(principal) else user_id)
     return {"items": items}
+
+
+class CollectionBulkIn(BaseModel):
+    items: list[CollectionItemIn] = Field(default_factory=list, max_length=500)
+    group_keys: list[str] = Field(default_factory=list, max_length=500)
+    ids: list[int] = Field(default_factory=list, max_length=200)
+
+
+@app.patch("/api/v1/collections/{collection_id}")
+def api_update_collection(collection_id: int, payload: CollectionCreateIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        db.execute("UPDATE collections SET name=?, description=? WHERE id=?",
+                   (payload.name.strip(), payload.description.strip(), collection_id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/collections/{collection_id}/items/bulk")
+def api_add_collection_items(collection_id: int, payload: CollectionBulkIn, principal: dict = Depends(public_api_principal)):
+    """Добавляет сразу несколько объявлений; уже лежащие в подборке пропускаются."""
+    user_id = require_user_principal(principal)
+    added = 0
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        for it in payload.items:
+            if not db.execute("SELECT 1 FROM creatives WHERE id=?", (it.creative_id,)).fetchone():
+                continue
+            cur = db.execute(
+                "INSERT INTO collection_items(collection_id,group_key,representative_creative_id,added_at) "
+                "VALUES(?,?,?,?) ON CONFLICT(collection_id,group_key) DO NOTHING",
+                (collection_id, it.group_key, it.creative_id, now_iso()))
+            added += cur.rowcount or 0
+        db.commit()
+    return {"ok": True, "added": added, "skipped": len(payload.items) - added}
+
+
+@app.post("/api/v1/collections/{collection_id}/items/remove")
+def api_remove_collection_items(collection_id: int, payload: CollectionBulkIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    removed = 0
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        for key in payload.group_keys:
+            removed += db.execute("DELETE FROM collection_items WHERE collection_id=? AND group_key=?",
+                                  (collection_id, key)).rowcount or 0
+        db.commit()
+    return {"ok": True, "removed": removed}
+
+
+@app.post("/api/v1/collections/{collection_id}/merge")
+def api_merge_collections(collection_id: int, payload: CollectionBulkIn, principal: dict = Depends(public_api_principal)):
+    """Переносит объявления из подборок `ids` в эту и удаляет опустевшие подборки."""
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        for other in payload.ids:
+            if other == collection_id:
+                continue
+            _require_own_collection(db, other, user_id)
+            db.execute(
+                "INSERT INTO collection_items(collection_id,group_key,representative_creative_id,added_at) "
+                "SELECT ?,group_key,representative_creative_id,added_at FROM collection_items WHERE collection_id=? "
+                "ON CONFLICT(collection_id,group_key) DO NOTHING", (collection_id, other))
+            db.execute("DELETE FROM collection_items WHERE collection_id=?", (other,))
+            db.execute("DELETE FROM collections WHERE id=?", (other,))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/collections/bulk-delete")
+def api_delete_collections(payload: CollectionBulkIn, principal: dict = Depends(public_api_principal)):
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        for cid in payload.ids:
+            _require_own_collection(db, cid, user_id)
+            db.execute("DELETE FROM collection_items WHERE collection_id=?", (cid,))
+            db.execute("DELETE FROM collections WHERE id=?", (cid,))
+        db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/v1/collections/{collection_id}/items")
@@ -4541,34 +5057,159 @@ def api_cross_platform_reuse(intent: str = "", principal: dict = Depends(public_
 
 
 @app.get("/api/v1/analytics/carousels")
-def api_carousels(intent: str = "", principal: dict = Depends(public_api_principal)):
-    """Creatives sharing a carousel_id were shown side-by-side in the same scrolling ad
-    carousel (sibling slides) — Dima (2026-10-19): competitive context, "who shows next
-    to mine" — not a cross-platform/time signal like the other analytics views."""
+def api_carousels(intent: str = "", creative_id: int = 0, limit: int = 40, principal: dict = Depends(public_api_principal)):
+    """Карусели из разных объявлений в том виде, как их показала площадка: порядок слайдов,
+    сколько объявлений в карусели всего и сколько было видно сразу, без прокрутки.
+    Источник — carousel_slides (состав присылает парсер). creative_id — только карусели с этим объявлением."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
+    limit = max(1, min(int(limit or 40), 100))
+    where, params = [], []
+    if intents:
+        placeholders = ",".join(["PYLOWER(?)"] * len(intents))
+        where.append(f"s.job_id IN (SELECT id FROM jobs WHERE PYLOWER(key_text) IN ({placeholders}))")
+        params += intents
+    if creative_id:
+        where.append("s.carousel_id IN (SELECT carousel_id FROM carousel_slides WHERE creative_id=?)")
+        params.append(int(creative_id))
+    wsql = (" WHERE " + " AND ".join(where)) if where else ""
     with closing(connect()) as db:
         groups = db.execute(
-            "SELECT carousel_id, COUNT(*) AS n, platform, MAX(captured_at) AS last_seen_at "
-            "FROM creatives c WHERE carousel_id IS NOT NULL AND carousel_id != ''"
-            + intent_sql +
-            " GROUP BY carousel_id HAVING n > 1 ORDER BY last_seen_at DESC LIMIT 30",
-            intents,
+            "SELECT s.carousel_id, COUNT(*) AS n, MAX(s.total) AS total, MAX(s.visible) AS visible, MAX(s.platform) AS platform,"
+            " MAX(s.page_url) AS page_url, MAX(s.job_id) AS job_id, MAX(s.observed_at) AS last_seen_at "
+            "FROM carousel_slides s" + wsql + " GROUP BY s.carousel_id HAVING n > 1 ORDER BY last_seen_at DESC LIMIT ?",
+            params + [limit],
         ).fetchall()
         items = []
         for g in groups:
-            members = db.execute(
-                "SELECT id,domain,title,image_url,carousel_slide_index,detection_method FROM creatives "
-                "WHERE carousel_id=? ORDER BY COALESCE(carousel_slide_index,999)",
+            rows = db.execute(
+                "SELECT s.slide_index,s.title,s.domain,s.image_url,s.creative_id,s.job_id,"
+                "c.title AS c_title,c.domain AS c_domain,c.image_url AS c_image,c.video_poster AS c_poster,c.creative_type AS c_type "
+                "FROM carousel_slides s LEFT JOIN creatives c ON c.id=s.creative_id WHERE s.carousel_id=? ORDER BY s.slide_index",
                 (g["carousel_id"],),
             ).fetchall()
+            members, fixed = [], False
+            for r in rows:
+                cid = r["creative_id"]
+                if cid is None:
+                    # слайд пришёл раньше, чем объявление записалось в библиотеку — привязываем сейчас
+                    cid = _carousel_match_creative(db, r["job_id"], r["title"], r["domain"] or "")
+                    if cid:
+                        db.execute("UPDATE carousel_slides SET creative_id=? WHERE carousel_id=? AND slide_index=?",
+                                   (cid, g["carousel_id"], r["slide_index"]))
+                        fixed = True
+                members.append({
+                    "id": cid, "title": r["title"] or r["c_title"], "domain": r["domain"] or r["c_domain"],
+                    "image_url": r["c_image"] or r["c_poster"] or r["image_url"], "creative_type": r["c_type"],
+                    "carousel_slide_index": r["slide_index"],
+                    "visible_at_once": r["slide_index"] < (g["visible"] or 1),
+                })
+            if fixed:
+                db.commit()
+            job = db.execute("SELECT key_text,city FROM jobs WHERE id=?", (g["job_id"],)).fetchone() if g["job_id"] else None
             items.append({
-                "carousel_id": g["carousel_id"], "platform": g["platform"],
-                "member_count": g["n"], "last_seen_at": g["last_seen_at"],
-                "members": [dict(m) for m in members],
+                "carousel_id": g["carousel_id"], "platform": g["platform"], "page_url": g["page_url"],
+                "job_id": g["job_id"], "key_text": job["key_text"] if job else None, "city": job["city"] if job else None,
+                "total": g["total"] or g["n"], "visible": g["visible"] or 1,
+                "member_count": g["n"], "last_seen_at": g["last_seen_at"], "members": members,
             })
-    return {"items": items}
+        # Вторая вкладка: галереи одного объявления (несколько картинок, порядок как в рекламе).
+        gwhere, gparams = [], []
+        if intents:
+            placeholders = ",".join(["PYLOWER(?)"] * len(intents))
+            gwhere.append(f"g.job_id IN (SELECT id FROM jobs WHERE PYLOWER(key_text) IN ({placeholders}))")
+            gparams += intents
+        if creative_id:
+            gwhere.append("g.creative_id=?")
+            gparams.append(int(creative_id))
+        galleries = []
+        for g in db.execute(
+            "SELECT g.*, j.key_text, j.city FROM creative_galleries g LEFT JOIN jobs j ON j.id=g.job_id"
+            + ((" WHERE " + " AND ".join(gwhere)) if gwhere else "") + " ORDER BY g.observed_at DESC LIMIT ?",
+            gparams + [limit * 2],
+        ).fetchall():
+            cid = g["creative_id"]
+            if cid is None:
+                cid = _carousel_match_creative(db, g["job_id"], g["title"], g["domain"] or "")
+                if cid:
+                    db.execute("UPDATE creative_galleries SET creative_id=? WHERE gallery_key=?", (cid, g["gallery_key"]))
+                    db.commit()
+            try:
+                images = json.loads(g["images_json"] or "[]")
+            except ValueError:
+                images = []
+            galleries.append({
+                "gallery_key": g["gallery_key"], "id": cid, "title": g["title"], "description": g["description"],
+                "domain": g["domain"], "images": images, "total": len(images), "visible": g["visible"] or 0,
+                "platform": g["platform"], "page_url": g["page_url"], "job_id": g["job_id"],
+                "key_text": g["key_text"], "city": g["city"], "last_seen_at": g["observed_at"],
+            })
+    return {"items": items, "galleries": galleries}
+
+
+@app.get("/api/v1/analytics/ad-signals")
+def api_ad_signals(intent: str = "", principal: dict = Depends(public_api_principal)):
+    """Что ещё видно в самих объявлениях (разметка, creative_details): промокоды и акции,
+    юридические предупреждения, возрастные метки, соцреклама, старые цены, уточнения, товары в плитках,
+    форматы — и сколько живёт одно объявление РСЯ (по его номеру data-ad-id)."""
+    user_id = require_user_principal(principal)
+    is_admin = _console.is_platform_admin(principal) and principal.get("kind") == "user"
+    where, params = ["1=1"], []
+    intents = _parse_intents(intent)
+    if intents:
+        where.append(_intent_exists_sql("c", intents))
+        params.extend(intents)
+    if not is_admin:
+        where.append("c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)")
+        params.append(user_id)
+    w = " AND ".join(where)
+    base = f"FROM creatives c JOIN creative_details cd ON cd.creative_id=c.id WHERE {w}"
+    with closing(connect()) as db:
+        t = db.execute(
+            "SELECT COUNT(*) AS total, SUM(COALESCE(cd.promo_text,'')<>'') AS promo, SUM(COALESCE(cd.warning,'')<>'') AS warning,"
+            " SUM(COALESCE(cd.age_label,'')<>'') AS age, SUM(cd.is_social) AS social, SUM(COALESCE(cd.price_old,'')<>'') AS old_price,"
+            " SUM(COALESCE(cd.callouts_json,'')<>'') AS callouts, SUM(COALESCE(cd.offers_json,'')<>'') AS offers,"
+            " SUM(COALESCE(cd.ad_id,'')<>'') AS with_ad_id, SUM(COALESCE(cd.direct_campaign_id,'')<>'') AS with_campaign " + base,
+            params,
+        ).fetchone()
+        formats = [dict(r) for r in db.execute(f"SELECT cd.ad_format AS format, COUNT(*) AS n {base} GROUP BY 1 ORDER BY 2 DESC", params)]
+        promos = [dict(r) for r in db.execute(
+            f"SELECT MAX(c.id) AS id, cd.promo_text AS text, c.domain, MAX(c.title) AS title, MAX(c.captured_at) AS last_seen_at, COUNT(*) AS n "
+            f"{base} AND COALESCE(cd.promo_text,'')<>'' GROUP BY cd.promo_text, c.domain ORDER BY last_seen_at DESC LIMIT 60", params)]
+        warnings = [dict(r) for r in db.execute(
+            f"SELECT cd.warning AS text, COUNT(*) AS n, COUNT(DISTINCT c.domain) AS domains {base} AND COALESCE(cd.warning,'')<>'' "
+            f"GROUP BY cd.warning ORDER BY n DESC LIMIT 20", params)]
+        ages = [dict(r) for r in db.execute(
+            f"SELECT cd.age_label AS label, COUNT(*) AS n {base} AND COALESCE(cd.age_label,'')<>'' GROUP BY 1 ORDER BY 2 DESC", params)]
+        callouts: dict[str, int] = {}
+        for (v,) in db.execute(f"SELECT cd.callouts_json {base} AND COALESCE(cd.callouts_json,'')<>''", params):
+            try:
+                for x in json.loads(v):
+                    callouts[x] = callouts.get(x, 0) + 1
+            except ValueError:
+                pass
+        price_drops = [dict(r) for r in db.execute(
+            f"SELECT c.id, c.title, c.domain, cd.price_current, cd.price_old, cd.discount_text, c.captured_at AS last_seen_at "
+            f"{base} AND COALESCE(cd.price_old,'')<>'' ORDER BY c.id DESC LIMIT 40", params)]
+        offers = []
+        for r in db.execute(f"SELECT c.id, c.domain, cd.offers_json, c.captured_at {base} AND COALESCE(cd.offers_json,'')<>'' ORDER BY c.id DESC LIMIT 30", params):
+            try:
+                items = json.loads(r["offers_json"])
+            except ValueError:
+                items = []
+            offers.append({"id": r["id"], "domain": r["domain"], "items": items, "last_seen_at": r["captured_at"]})
+        longest = [dict(r) for r in db.execute(
+            f"SELECT cd.ad_id, MAX(c.id) AS id, MAX(c.title) AS title, MAX(c.domain) AS domain,"
+            f" MIN(o.observed_at) AS first_seen_at, MAX(o.observed_at) AS last_seen_at, COUNT(DISTINCT o.job_id) AS runs "
+            f"FROM creatives c JOIN creative_details cd ON cd.creative_id=c.id JOIN occurrences o ON o.creative_id=c.id "
+            f"WHERE {w} AND COALESCE(cd.ad_id,'')<>'' GROUP BY cd.ad_id HAVING runs>1 "
+            f"ORDER BY julianday(MAX(o.observed_at))-julianday(MIN(o.observed_at)) DESC, runs DESC LIMIT 30", params)]
+    return {
+        "totals": {k: (t[k] or 0) for k in t.keys()},
+        "formats": formats, "promos": promos, "warnings": warnings, "ages": ages,
+        "callouts": [{"text": k, "n": v} for k, v in sorted(callouts.items(), key=lambda kv: -kv[1])[:40]],
+        "price_drops": price_drops, "offers": offers, "longest_ads": longest,
+    }
 
 
 @app.get("/api/v1/analytics/campaigns")
@@ -4624,6 +5265,269 @@ def api_keywords(intent: str = "", principal: dict = Depends(public_api_principa
             if (r["keyword"] or "").strip().lower() not in _UTM_TERM_PLACEHOLDERS
         ][:200]
     return {"items": items}
+
+
+def _clean_adv_name(name: str | None, inn: str | None) -> str:
+    """Название рекламодателя для показа: в базе встречаются обрывки дисклеймера
+    («Финансовые услуги оказывает: ПАО …», «нк. Проектная декларация на сайте …»)."""
+    text = re.sub(r"\s+", " ", (name or "")).strip()
+    for long, short in (("ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", "ООО"), ("ПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО", "ПАО"),
+                        ("НЕПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО", "НАО"), ("АКЦИОНЕРНОЕ ОБЩЕСТВО", "АО"),
+                        ("ИНДИВИДУАЛЬНЫЙ ПРЕДПРИНИМАТЕЛЬ", "ИП"), ("АВТОНОМНАЯ НЕКОММЕРЧЕСКАЯ ОРГАНИЗАЦИЯ", "АНО")):
+        text = re.sub(re.escape(long), short, text, flags=re.IGNORECASE)
+    # «ПАО Сбербанк. ПАО "СБЕРБАНК РОССИИ"» — берём первое название
+    first = text.split(". ")[0].strip()
+    if len(first) >= 4 and len(text) > len(first) + 4:
+        text = first
+    if re.search(r"противопоказан|посоветуйтесь|специалист", text, flags=re.IGNORECASE):
+        text = ""
+    m = re.match(r"^[^:]{0,60}(оказывает|предоставляет|осуществляет|реализует)[^:]{0,20}:\s*(.+)$", text, flags=re.IGNORECASE)
+    if m:
+        text = m.group(2).strip()
+    if not text or text[0].islower() or "декларац" in text.lower():
+        return f"ИНН {inn}" if inn else "Без названия"
+    return text[:120]
+
+
+@app.get("/api/v1/analytics/summary")
+def api_analytics_summary(intent: str = "", principal: dict = Depends(public_api_principal)):
+    """Сводка для экрана «Обзор»: о чём реклама, кто рекламируется больше всех, какие объявления
+    встречаются чаще и дольше всего, на каких сайтах их показывают и где расходятся данные.
+    Одно объявление (общий content_fingerprint) считается один раз. Обычный пользователь видит
+    сводку только по своим запускам, администратор — по всей базе; intent сужает до запросов."""
+    user_id = require_user_principal(principal)
+    is_admin = _console.is_platform_admin(principal) and principal.get("kind") == "user"
+    gk = "COALESCE(NULLIF(c.content_fingerprint,''),'hash:'||c.creative_hash)"
+    where, params = ["1=1"], []
+    intents = _parse_intents(intent)
+    if intents:
+        where.append(_intent_exists_sql("c", intents))
+        params.extend(intents)
+    if not is_admin:
+        where.append("c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)")
+        params.append(user_id)
+    w = " AND ".join(where)
+    unknown = [_pylower(aii.UNKNOWN), _pylower(aii.UNKNOWN).replace("ё", "е")]
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    with closing(connect()) as db:
+        total = db.execute(f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w}", params).fetchone()[0]
+        fresh = db.execute(f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w} AND substr(c.captured_at,1,10)>=?", params + [week_ago]).fetchone()[0]
+        discounts = db.execute(f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w} AND c.discount_percent IS NOT NULL", params).fetchone()[0]
+        adv_total = db.execute(
+            f"SELECT COUNT(DISTINCT l.advertiser_id) FROM creatives c JOIN creative_advertiser_links l ON l.creative_id=c.id WHERE {w}", params).fetchone()[0]
+
+        # О чём реклама: интенты объявлений
+        intent_rows = db.execute(
+            f"SELECT MIN(c.ai_intent) AS intent, COUNT(DISTINCT {gk}) AS n FROM creatives c "
+            f"WHERE {w} AND c.ai_intent IS NOT NULL AND PYLOWER(c.ai_intent) NOT IN (?,?) GROUP BY PYLOWER(c.ai_intent) ORDER BY n DESC LIMIT 12",
+            params + unknown).fetchall()
+        labelled = db.execute(
+            f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w} AND c.ai_intent IS NOT NULL AND PYLOWER(c.ai_intent) NOT IN (?,?)",
+            params + unknown).fetchone()[0]
+        # Доля объявлений по теме выбранных запросов (если запрос выбран)
+        on_topic = None
+        if intents:
+            match: set[str] = set()
+            for kw in intents[:10]:
+                match.update(_history_intents(db, kw))
+            if match:
+                ml = sorted(match)[:600]
+                n_match = db.execute(
+                    f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w} AND PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ml))})",
+                    params + ml).fetchone()[0]
+            else:
+                n_match = 0
+            on_topic = {"count": n_match, "of": labelled, "pct": round(n_match * 100 / labelled) if labelled else 0}
+            match_set = match
+        else:
+            match_set = set()
+        # Выбран запрос и по нему есть объявления по теме — списки ниже строим только по ним:
+        # иначе верх занимают банки и застройщики, которых сеть показывает всем подряд.
+        wt, pt = w, list(params)
+        topic_only = bool(match_set)
+        if topic_only:
+            ml2 = sorted(match_set)[:600]
+            wt = w + f" AND PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ml2))})"
+            pt = params + ml2
+
+        # Кто рекламируется больше всех
+        adv_rows = db.execute(
+            f"SELECT a.inn, a.canonical_name, a.website_url, COUNT(DISTINCT {gk}) AS creatives, "
+            "(SELECT COUNT(*) FROM occurrences o WHERE o.creative_id IN "
+            "  (SELECT l2.creative_id FROM creative_advertiser_links l2 WHERE l2.advertiser_id=a.id)) AS shows, "
+            "MIN(c.captured_at) AS first_seen, MAX(c.captured_at) AS last_seen "
+            f"FROM creatives c JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id "
+            f"WHERE {wt} AND COALESCE(a.inn,'')<>'' GROUP BY a.id ORDER BY creatives DESC, shows DESC LIMIT 10", pt).fetchall()
+
+        # Что встречается чаще и дольше всего
+        top_rows = db.execute(
+            f"SELECT {gk} AS gk, MAX(CASE WHEN COALESCE(c.image_url,'')<>'' THEN c.id END) AS rep_id, COUNT(o.id) AS shows, COUNT(DISTINCT o.job_id) AS runs "
+            f"FROM creatives c LEFT JOIN occurrences o ON o.creative_id=c.id WHERE {wt} AND LENGTH(COALESCE(c.title,''))>8 "
+            "GROUP BY gk HAVING MAX(CASE WHEN COALESCE(c.image_url,'')<>'' THEN 1 ELSE 0 END)=1 "
+            "ORDER BY runs DESC, shows DESC LIMIT 6", pt).fetchall()
+        rep_ids = [r["rep_id"] for r in top_rows]
+        by_id = {r["id"]: r for r in db.execute(
+            f"SELECT * FROM creatives WHERE id IN ({','.join(['?'] * len(rep_ids)) or '-1'})", rep_ids).fetchall()}
+        top_items = [_creative_row_to_dict(by_id[i]) for i in rep_ids if i in by_id]
+        _attach_intents(db, top_items, None if is_admin else user_id)
+        _attach_stats(db, top_items)
+        _attach_collections(db, top_items, principal)
+
+        # Где показывают: сайты, на которых найдена реклама
+        site_rows = db.execute(
+            f"SELECT c.platform AS site, COUNT(DISTINCT {gk}) AS n FROM creatives c WHERE {w} AND COALESCE(c.platform,'')<>'' "
+            "GROUP BY c.platform ORDER BY n DESC LIMIT 10", params).fetchall()
+        sites_total = db.execute(
+            f"SELECT COUNT(DISTINCT c.platform) FROM creatives c WHERE {w} AND COALESCE(c.platform,'')<>''", params).fetchone()[0]
+
+        # Расхождения: посадочная на чужом домене; на сайте указано другое юрлицо, чем в объявлении
+        landing_mismatch = db.execute(
+            f"SELECT COUNT(DISTINCT {gk}) FROM creatives c JOIN creative_utm u ON u.creative_id=c.id WHERE {w} AND u.landing_domain_mismatch=1",
+            params).fetchone()[0]
+        legal_mismatch = 0
+        try:
+            legal = {r["domain"]: r["inn"] for r in db.execute(
+                "SELECT domain, inn FROM landing_legal WHERE status='found' AND COALESCE(inn,'')<>''").fetchall()}
+            seen_groups: set[str] = set()
+            for r in db.execute(
+                f"SELECT {gk} AS gk, u.final_url_domain AS d, a.inn AS inn FROM creatives c JOIN creative_utm u ON u.creative_id=c.id "
+                f"JOIN creative_advertiser_links l ON l.creative_id=c.id JOIN advertisers a ON a.id=l.advertiser_id "
+                f"WHERE {w} AND COALESCE(a.inn,'')<>'' AND COALESCE(u.final_url_domain,'')<>''", params).fetchall():
+                site_inn = legal.get(re.sub(r"^(www|m)\.", "", (r["d"] or "").lower()))
+                if site_inn and site_inn != r["inn"]:
+                    seen_groups.add(r["gk"])
+            legal_mismatch = len(seen_groups)
+        except sqlite3.Error:
+            legal_mismatch = 0
+    return {
+        "totals": {"creatives": total, "advertisers": adv_total, "fresh_7d": fresh, "discounts": discounts, "sites": sites_total,
+                   "labelled": labelled, "landing_mismatch": landing_mismatch, "legal_mismatch": legal_mismatch},
+        "on_topic": on_topic,
+        "intents": [{"intent": r["intent"], "count": r["n"], "pct": round(r["n"] * 100 / labelled) if labelled else 0,
+                     "on_topic": (_pylower(r["intent"]) in match_set) if intents else None} for r in intent_rows],
+        "advertisers": [{"inn": r["inn"], "name": _clean_adv_name(r["canonical_name"], r["inn"]), "website_url": r["website_url"],
+                         "creatives": r["creatives"], "shows": r["shows"], "first_seen_at": r["first_seen"], "last_seen_at": r["last_seen"]}
+                        for r in adv_rows],
+        "top_creatives": top_items,
+        "sites": [{"site": r["site"], "count": r["n"], "pct": round(r["n"] * 100 / total) if total else 0} for r in site_rows],
+        "scope": "all" if is_admin else "own", "topic_only": topic_only,
+    }
+
+
+@app.get("/api/v1/analytics/leaders")
+def api_analytics_leaders(ai_intent: str = "", intent: str = "", limit: int = 24, principal: dict = Depends(public_api_principal)):
+    """Сильные креативы внутри одной темы (интента): объявление тем сильнее, чем на большем числе
+    сайтов и в большем числе запусков и городов оно встречается и чем дольше крутится. Такие
+    объявления рекламодатель не выключает и масштабирует — значит, они окупаются.
+    ai_intent — тема; если не задана, берётся тема, подходящая под выбранные запросы (intent),
+    иначе самая частая. Возвращает и список тем для выбора."""
+    user_id = require_user_principal(principal)
+    is_admin = _console.is_platform_admin(principal) and principal.get("kind") == "user"
+    limit = max(1, min(limit, 60))
+    gk = "COALESCE(NULLIF(c.content_fingerprint,''),'hash:'||c.creative_hash)"
+    where, params = ["1=1"], []
+    intents = _parse_intents(intent)
+    if intents:
+        where.append(_intent_exists_sql("c", intents))
+        params.extend(intents)
+    if not is_admin:
+        where.append("c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)")
+        params.append(user_id)
+    w = " AND ".join(where)
+    unknown = [_pylower(aii.UNKNOWN), _pylower(aii.UNKNOWN).replace("ё", "е")]
+    with closing(connect()) as db:
+        theme_rows = db.execute(
+            f"SELECT MIN(c.ai_intent) AS intent, COUNT(DISTINCT {gk}) AS n, COUNT(DISTINCT l.advertiser_id) AS advs "
+            f"FROM creatives c LEFT JOIN creative_advertiser_links l ON l.creative_id=c.id "
+            f"WHERE {w} AND c.ai_intent IS NOT NULL AND PYLOWER(c.ai_intent) NOT IN (?,?) "
+            "GROUP BY PYLOWER(c.ai_intent) ORDER BY n DESC LIMIT 60", params + unknown).fetchall()
+        match: set[str] = set()
+        for kw in intents[:10]:
+            match.update(_history_intents(db, kw))
+        themes = [{"intent": r["intent"], "count": r["n"], "advertisers": r["advs"],
+                   "on_topic": _pylower(r["intent"]) in match} for r in theme_rows]
+        themes.sort(key=lambda t: (not t["on_topic"], -t["count"]))
+        chosen = (ai_intent or "").strip()
+        if not chosen and themes:
+            chosen = themes[0]["intent"]
+        items: list[dict[str, Any]] = []
+        if chosen:
+            rows = db.execute(
+                f"SELECT {gk} AS gk, MAX(c.id) AS any_id, MAX(CASE WHEN COALESCE(c.image_url,'')<>'' THEN c.id END) AS img_id, "
+                "COUNT(DISTINCT o.platform) AS sites, COUNT(DISTINCT o.job_id) AS runs, COUNT(o.id) AS shows, "
+                "COUNT(DISTINCT PYLOWER(j.city)) AS cities, MIN(COALESCE(o.observed_at,c.captured_at)) AS first_seen, "
+                "MAX(COALESCE(o.observed_at,c.captured_at)) AS last_seen "
+                f"FROM creatives c LEFT JOIN occurrences o ON o.creative_id=c.id LEFT JOIN jobs j ON j.id=o.job_id "
+                f"WHERE {w} AND PYLOWER(c.ai_intent)=? GROUP BY gk", params + [_pylower(chosen)]).fetchall()
+
+            def _days(a: str | None, b: str | None) -> int:
+                try:
+                    return (datetime.fromisoformat(str(b)[:19]).date() - datetime.fromisoformat(str(a)[:19]).date()).days + 1
+                except Exception:
+                    return 1
+            stats = [{"gk": r["gk"], "id": r["img_id"] or r["any_id"], "sites": max(r["sites"], 1), "runs": max(r["runs"], 1),
+                      "shows": max(r["shows"], 1), "cities": max(r["cities"], 1), "days": _days(r["first_seen"], r["last_seen"]),
+                      "first_seen_at": r["first_seen"], "last_seen_at": r["last_seen"]} for r in rows]
+            mx = {k: max([x[k] for x in stats] or [1]) for k in ("sites", "runs", "shows", "cities", "days")}
+            weights = {"sites": 35, "runs": 30, "shows": 15, "cities": 10, "days": 10}
+            floors = {"sites": 5, "runs": 8, "shows": 15, "cities": 4, "days": 7}
+            for x in stats:
+                # показатель «1» (встречено один раз, на одном сайте) силы не добавляет
+                # Сравниваем с лучшим в теме, но не ниже разумной планки — иначе в маленькой теме
+                # объявление, встреченное дважды, выглядело бы «лидером».
+                x["score"] = round(sum(weights[k] * min(1.0, (x[k] - 1) / (max(mx[k], floors[k]) - 1)) for k in weights))
+            stats.sort(key=lambda x: (-x["score"], -x["shows"], -x["id"]))
+            top = stats[:limit]
+            ids = [x["id"] for x in top]
+            by_id = {r["id"]: r for r in db.execute(
+                f"SELECT * FROM creatives WHERE id IN ({','.join(['?'] * len(ids)) or '-1'})", ids).fetchall()}
+            reps = [_creative_row_to_dict(by_id[i]) for i in ids if i in by_id]
+            _attach_intents(db, reps, None if is_admin else user_id)
+            _attach_stats(db, reps)
+            _attach_collections(db, reps, principal)
+            rep_by_id = {r["id"]: r for r in reps}
+            adv_by_id: dict[int, dict[str, Any]] = {}
+            for r in db.execute(
+                f"SELECT l.creative_id, a.inn, a.canonical_name FROM creative_advertiser_links l JOIN advertisers a ON a.id=l.advertiser_id "
+                f"WHERE l.creative_id IN ({','.join(['?'] * len(ids)) or '-1'})", ids).fetchall():
+                adv_by_id.setdefault(r["creative_id"], {"inn": r["inn"], "name": _clean_adv_name(r["canonical_name"], r["inn"])})
+            for rank, x in enumerate(top, 1):
+                rep = rep_by_id.get(x["id"])
+                if not rep:
+                    continue
+                items.append({"rank": rank, "score": x["score"],
+                              "level": "leader" if x["score"] >= 60 else ("strong" if x["score"] >= 30 else "normal"),
+                              "sites": x["sites"], "runs": x["runs"], "shows": x["shows"], "cities": x["cities"], "days": x["days"],
+                              "advertiser": adv_by_id.get(x["id"]), "creative": rep})
+            total_in_theme = len(stats)
+            repeated = sum(1 for x in stats if x["runs"] > 1 or x["sites"] > 1)
+        else:
+            total_in_theme, repeated = 0, 0
+    return {"themes": themes, "theme": chosen, "items": items, "total_in_theme": total_in_theme, "repeated": repeated,
+            "weights": {"sites": 35, "runs": 30, "shows": 15, "cities": 10, "days": 10}}
+
+
+@app.get("/api/v1/analytics/daily")
+def api_daily_creatives(days: int = 14, intent: str = "", principal: dict = Depends(public_api_principal)):
+    """Сколько новых креативов найдено за каждый из последних дней (по дате первого обнаружения).
+    Считает по всей базе, а не по последним загруженным карточкам, как раньше делал фронтенд."""
+    require_user_principal(principal)
+    days = max(1, min(days, 90))
+    since = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    where, params = "substr(c.captured_at,1,10)>=?", [since]
+    intents = _parse_intents(intent)
+    if intents:
+        where += " AND " + _intent_exists_sql("c", intents)
+        params.extend(intents)
+    with closing(connect()) as db:
+        rows = db.execute(
+            f"SELECT substr(c.captured_at,1,10) AS day, COUNT(*) AS n FROM creatives c WHERE {where} GROUP BY day", params).fetchall()
+    by_day = {r["day"]: r["n"] for r in rows}
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        out.append({"day": d, "count": by_day.get(d, 0)})
+    return {"items": out}
 
 
 @app.get("/api/v1/analytics/coverage")
@@ -4715,49 +5619,17 @@ def api_landing_mismatch(intent: str = "", principal: dict = Depends(public_api_
     return {"items": [dict(r) for r in rows]}
 
 
-@app.get("/api/admin/status")
-def admin_status(request: Request):
-    if not auth_page(request):
-        raise HTTPException(status_code=401)
+def _console_status_extra() -> dict[str, Any]:
     with closing(connect()) as db:
-        return {
-            "jobs": db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
-            "queued": db.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0],
-            "running": db.execute("SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[0],
-            "creatives": db.execute("SELECT COUNT(*) FROM creatives").fetchone()[0],
-            "occurrences": db.execute("SELECT COUNT(*) FROM occurrences").fetchone()[0],
-        }
-
-
-@app.get("/api/admin/embeddings-status")
-def admin_embeddings_status(request: Request):
-    """Read-only progress check for the background embedding drain loop
-    (_embedding_drain_loop, started at process startup — see init_db()'s call site).
-    2026-10-23: this replaced a manually-triggered batch endpoint — embeddings are now
-    computed continuously, one item at a time, in the background; nothing to trigger."""
-    if not auth_page(request):
-        raise HTTPException(status_code=401)
-    with closing(connect()) as db:
-        remaining_intents = db.execute(
+        intents_left = db.execute(
             "SELECT COUNT(DISTINCT PYLOWER(j.key_text)) FROM jobs j "
             "LEFT JOIN intent_embeddings ie ON ie.key_text_lower = PYLOWER(j.key_text) "
-            "WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> '' AND ie.key_text_lower IS NULL"
-        ).fetchone()[0]
-        remaining_creatives = db.execute(
-            "SELECT COUNT(*) FROM creatives c LEFT JOIN creative_embeddings ce ON ce.creative_id=c.id "
-            "WHERE ce.creative_id IS NULL AND (COALESCE(c.title,'')<>'' OR COALESCE(c.description,'')<>'')"
-        ).fetchone()[0]
-        done_intents = db.execute("SELECT COUNT(*) FROM intent_embeddings").fetchone()[0]
-        done_creatives_real = db.execute("SELECT COUNT(*) FROM creative_embeddings WHERE skip_reason IS NULL").fetchone()[0]
-        done_creatives_skipped = db.execute(
-            "SELECT skip_reason, COUNT(*) n FROM creative_embeddings WHERE skip_reason IS NOT NULL GROUP BY skip_reason"
-        ).fetchall()
-    return {
-        "intents_done": done_intents, "intents_remaining": remaining_intents,
-        "creatives_with_real_embedding": done_creatives_real,
-        "creatives_skipped": {r["skip_reason"]: r["n"] for r in done_creatives_skipped},
-        "creatives_remaining": remaining_creatives,
-    }
+            "WHERE j.key_text IS NOT NULL AND TRIM(j.key_text) <> '' AND ie.key_text_lower IS NULL").fetchone()[0]
+    return {"gemini_model": aii.last_model_used, "intent_embeddings_pending": intents_left}
+
+
+# «Консоль» ЛК (2026-11-23): служебное для создателя (роль superuser) — app/console.py.
+app.include_router(_console.build_router(public_api_principal, connect, hash_password, now_iso, _console_status_extra))
 
 
 # «Сайты» ЛК «Реклама» (2026-11-18): домены reg.ru и размещение сайтов (app/sites_infra.py).

@@ -143,12 +143,23 @@ class Worker:
         try:
             connection = mysql.connector.connect(**cfg)
             cursor = connection.cursor(dictionary=True)
+            run = None
+            # Точная привязка по метке задания (иначе параллельные запуски одного ключа/города путают данные).
             cursor.execute(
                 "SELECT id,status,platforms_total,platforms_finished,creative_occurrences,unique_creatives,error_summary,started_at,finished_at "
-                "FROM parser_runs WHERE city=%s AND key_text=%s AND started_at >= %s ORDER BY id DESC LIMIT 1",
-                (city, key_text, run_started_at),
+                "FROM parser_runs WHERE config_text LIKE %s ORDER BY id DESC LIMIT 1",
+                (f'%"control_job_tag": "J{job_id}J"%',),
             )
-            run = cursor.fetchone()
+            _rows = cursor.fetchall()
+            run = _rows[0] if _rows else None
+            if not run:
+                cursor.execute(
+                    "SELECT id,status,platforms_total,platforms_finished,creative_occurrences,unique_creatives,error_summary,started_at,finished_at "
+                    "FROM parser_runs WHERE city=%s AND key_text=%s AND started_at >= %s ORDER BY id DESC LIMIT 1",
+                    (city, key_text, run_started_at),
+                )
+                _rows = cursor.fetchall()
+                run = _rows[0] if _rows else None
             if not run:
                 self.post_log(job_id, "\n[worker] В MySQL не найден tracked-запуск для этих параметров; синхронизация пропущена.\n")
                 return {}
@@ -805,6 +816,15 @@ class Worker:
         env = os.environ.copy()
         env["PARSYA_CITY"] = city
         env["PARSYA_KEY_TEXT"] = key_text
+        variant = str(job.get("variant") or "").strip()
+        if variant.split("#")[0].split("+")[0] in ("vk", "vk-walls", "vk-groups"):
+            self.execute_vk_job(job_id, city, key_text, variant, env)
+            return
+        if variant:
+            env["PARSYA_WARMUP"] = variant
+            env["PARSYA_DZEN_PASSES"] = "1"
+            env["PARSYA_CAPTCHA_ABORT"] = "1"  # капча = сессия без рекламы; перезапуск с новым аккаунтом
+            self.post_log(job_id, f"[worker] Вариант теста набивки профиля: {variant}\n")
         env["PARSYA_SOURCE_MODE"] = "remote-worker"
         env["PARSYA_JOB_ID"] = str(job_id)
         env["PARSYA_CHROME_PORT"] = str(self.chrome_port)
@@ -815,9 +835,11 @@ class Worker:
         try:
             sys.path.insert(0, str(self.home))
             import yandex_accounts_db as yadb
+            if "shared" in variant.partition("#")[2]:
+                raise RuntimeError("метка shared: служебный запуск без аккаунта пула")
             conn = yadb.connect()
             try:
-                acc = yadb.acquire_account_for_intent(conn, key_text, city)
+                acc = yadb.acquire_account_for_intent(conn, key_text + (f" [{variant}@{int(job.get('attempts') or 0)}]" if variant else ""), city)
             finally:
                 conn.close()
             if acc:
@@ -892,6 +914,52 @@ class Worker:
                 })
             except Exception:
                 pass
+
+    def execute_vk_job(self, job_id: int, city: str, key_text: str, variant: str, env: dict) -> None:
+        """VK-запуск (вариант «vk», «vk+feed»): parsya_vk_harvester.py сам шлёт креативы в панель,
+        без MySQL и без аккаунтов Яндекса. Профиль VK один, запуски встают в очередь на его блокировке."""
+        script = self.home / "parsya_vk_harvester.py"
+        env["PARSYA_SOURCE_MODE"] = "remote-worker"
+        env["PARSYA_JOB_ID"] = str(job_id)
+        env["PARSYA_CHROME_PORT"] = str(self.chrome_port)
+        env["PYTHONUNBUFFERED"] = "1"
+        if "+feed" in variant.split("#")[0]:
+            env.setdefault("PARSYA_VK_FEED_CALLS", "80")
+        if variant.split("#")[0] == "vk-walls":
+            env["PARSYA_VK_MODE"] = "walls"
+        if variant.split("#")[0] == "vk-groups":  # поиск сообществ по ключу и городу
+            env["PARSYA_VK_MODE"] = "groups"
+        self.post_log(job_id, f"[worker] VK-запуск: {variant}\n")
+        started_at = time.time()
+        exit_code, result, buf = 1, {}, ""
+        try:
+            proc = subprocess.Popen([self.python, str(script)], cwd=str(self.home), env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                if line.startswith("PARSYA_VK_RESULT "):
+                    try:
+                        result = json.loads(line.split(" ", 1)[1])
+                    except Exception:
+                        pass
+                buf += line
+                if len(buf) >= 4000 or line.startswith("[VK]"):
+                    self.post_log(job_id, buf)
+                    buf = ""
+            exit_code = proc.wait()
+        except Exception as exc:
+            buf += f"\n[worker] Ошибка VK-запуска: {type(exc).__name__}: {exc}\n"
+        if buf:
+            self.post_log(job_id, buf)
+        errors = {3: "VK: профиль не залогинен — нужен ручной вход (python parsya_vk_harvester.py --login)",
+                  4: "VK: профиль занят другим запуском дольше таймаута"}
+        self.request("POST", f"/api/worker/jobs/{job_id}/finish", json={
+            "status": "succeeded" if exit_code == 0 else "failed",
+            "exit_code": exit_code,
+            "error": "" if exit_code == 0 else errors.get(exit_code, f"VK-сборщик завершился с кодом {exit_code}"),
+            "result": {"duration_seconds": round(time.time() - started_at, 2), "platform": "vk.com", **result},
+        })
 
     def run_forever(self) -> None:
         print(f"[worker] Started worker={self.worker_id} slot={self.slot + 1}; control={self.base}; parser={self.script}", flush=True)

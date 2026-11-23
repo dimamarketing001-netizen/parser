@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - optional dependency
     genai_types = None  # type: ignore[assignment]
 
 from app import embeddings as emb
+from app import taxonomy as tx
 
 # Бесплатный тариф Google считает дневную квоту (RequestsPerDayPerProjectPerModel) ОТДЕЛЬНО
 # для каждой модели, поэтому при её исчерпании переходим к следующей модели из списка
@@ -56,16 +57,39 @@ _PROMPT = """Ты классифицируешь рекламные объявл
 - интент — короткая тема: 1–3 слова, по-русски, строчными буквами, именительный падеж
   (например: «кроссовки», «увеличение пенсии», «банкротство физлиц», «кредитная карта»,
   «ремонт квартир», «недвижимость», «онлайн-курсы»);
+- называй КОНКРЕТНЫЙ товар или услугу, а не широкую категорию: «матрасы», а не «мебель»;
+  «пластиковые окна», а не «остекление» или «строительство»; «натяжные потолки», а не «ремонт»;
+  «беговые дорожки», а не «спорттовары». Широкую категорию ставь, только если объявление
+  рекламирует магазин или компанию в целом, без конкретного товара;
 - отвечай только о самом объявлении, НЕ ориентируйся на то, по какому запросу его нашли;
-- если подходит уже встречавшийся интент из списка ниже — используй его ТОЧНО в такой же
-  формулировке (не придумывай синонимы);
+- если в списке ниже уже есть интент, называющий ТОТ ЖЕ конкретный товар или услугу —
+  используй его ТОЧНО в такой же формулировке (не придумывай синонимы); более широкий интент
+  из списка вместо конкретного не подставляй;
 - если по тексту понять тему невозможно — «{unknown}».
 
 Уже встречавшиеся интенты: {known}
 
 Объявления (JSON): {items}
 
-Верни JSON-массив объектов {{"id": <id объявления>, "intent": "<интент>"}} — по одному на каждое объявление."""
+Кроме интента для КАЖДОГО объявления выбери из таксономии ниже:
+- "main" — основной интент: название раздела ТОЧНО как в списке (до двоеточия);
+- "sub" — под-интент: одно название подрубрики ТОЧНО из списка этого раздела (после двоеточия).
+Как выбирать:
+- услуги (юристы, ремонт, уборка, красота, обучение, перевозки…) — разделы Яндекс Услуг
+  (пример: «юрист по разводу» → Юристы / Семейные споры; «химчистка пальто» → Хозяйство и уборка / Химчистка одежды);
+- товары — разделы Яндекс Маркета (пример: «матрасы» → Товары для дома / Мебель; «зимние шины» → Авто / Шины и диски;
+  «беговая дорожка» → Спорт и отдых / Тренажеры и фитнес);
+- новостройки, кредиты, вакансии, медицина, онлайн-курсы, B2B-софт и т.п. — доп. разделы
+  (пример: «ЖК от застройщика» → Недвижимость / Новостройки; «CRM для бизнеса» → Бизнес-сервисы и ПО / CRM-системы;
+  «имплантация зубов» → Медицина и здоровье / Имплантация зубов; «служба по контракту» → Работа и вакансии / Военная служба по контракту);
+- автосалон и марки машин → Авто / Новые автомобили; автосервис → Ремонт авто / …;
+- если подходящей подрубрики нет — «Другое» в выбранном разделе; если тему понять нельзя — main «Не определено», sub «Не определено».
+Не придумывай новых названий разделов и подрубрик.
+
+Таксономия (раздел: подрубрика; подрубрика; …):
+{taxonomy}
+
+Верни JSON-массив объектов {{"id": <id объявления>, "intent": "<интент>", "main": "<раздел>", "sub": "<подрубрика>"}} — по одному на каждое объявление."""
 
 
 def _client() -> Any:
@@ -74,7 +98,8 @@ def _client() -> Any:
     key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not key:
         raise RuntimeError("GEMINI_API_KEY/GOOGLE_API_KEY not set")
-    return genai.Client(api_key=key)
+    # таймаут обязателен: без него зависший запрос навсегда останавливает фоновую разметку
+    return genai.Client(api_key=key, http_options={"timeout": 120000})
 
 
 def normalize_intent(value: str | None) -> str:
@@ -91,9 +116,10 @@ def classify_batch(
     known_intents: list[str],
     max_wait_seconds: float = 3600,
     on_hard_failure: Callable[[str], None] | None = None,
-) -> dict[int, str] | None:
-    """items: [{id,title,description}]. Возвращает {id: intent} либо None при жёсткой ошибке.
-    429 переживаем так же, как embeddings.py: ждём ровно столько, сколько просит Google."""
+) -> dict[int, tuple[str, str | None, str | None]] | None:
+    """items: [{id,title,description}]. Возвращает {id: (интент, раздел, подрубрика)} либо None при жёсткой ошибке.
+    Раздел/подрубрика проверяются по таксономии: если Gemini назвал несуществующие — (интент, None, None),
+    и их потом ставят правила app/taxonomy. 429 переживаем так же, как embeddings.py."""
     if not items:
         return {}
     payload = [
@@ -104,16 +130,29 @@ def classify_batch(
         unknown=UNKNOWN,
         known=", ".join(known_intents[:MAX_KNOWN]) or "пока нет",
         items=json.dumps(payload, ensure_ascii=False),
+        taxonomy=tx.prompt_list(),
     )
     schema = {
         "type": "ARRAY",
-        "items": {"type": "OBJECT", "properties": {"id": {"type": "INTEGER"}, "intent": {"type": "STRING"}}, "required": ["id", "intent"]},
+        "items": {"type": "OBJECT", "properties": {
+            "id": {"type": "INTEGER"}, "intent": {"type": "STRING"}, "main": {"type": "STRING"}, "sub": {"type": "STRING"}},
+            "required": ["id", "intent", "main", "sub"]},
     }
     data = _call_json(prompt, schema, max_wait_seconds, on_hard_failure)
     if data is None:
         return None
     wanted = {it["id"] for it in items}
-    return {int(row["id"]): normalize_intent(row.get("intent")) for row in data if int(row["id"]) in wanted}
+    out: dict[int, tuple[str, str | None, str | None]] = {}
+    for row in data:
+        try:
+            rid = int(row["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if rid not in wanted:
+            continue
+        pair = tx.validate(row.get("main"), row.get("sub"))
+        out[rid] = (normalize_intent(row.get("intent")), pair[0] if pair else None, pair[1] if pair else None)
+    return out
 
 
 def _call_json(prompt: str, schema: dict, max_wait_seconds: float = 3600, on_hard_failure: Callable[[str], None] | None = None) -> Any | None:

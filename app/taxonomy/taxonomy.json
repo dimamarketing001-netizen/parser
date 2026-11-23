@@ -1,0 +1,4937 @@
+[
+ {
+  "main": "Услуги для животных",
+  "source": "uslugi",
+  "yandex_id": "/uslugi-dla-jivotnyh",
+  "subs": [
+   {
+    "name": "Выгул",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стрижка животных",
+    "source": "uslugi"
+   },
+   {
+    "name": "Передержка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стрижка когтей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дрессировка собак",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перевозка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обслуживание аквариума",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дрессировка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мастер-классы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Составление родословной",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ветеринарные клиники",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Ремонт и установка техники",
+  "source": "uslugi",
+  "yandex_id": "/remont-i-ustanovka-tehniki",
+  "subs": [
+   {
+    "name": "Стиральные машины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мобильные телефоны и планшеты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Посудомоечные машины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Холодильники",
+    "source": "uslugi"
+   },
+   {
+    "name": "Водонагреватели",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кухонные плиты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мелкая бытовая техника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Телевизоры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кондиционеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Электрооборудование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вытяжки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Варочные панели",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сушильные машины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Духовые шкафы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кофемашины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фото- и видеотехника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ноутбуки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт промышленного оборудования",
+    "source": "uslugi"
+   },
+   {
+    "name": "Принтеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фильтры для воды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Промышленные холодильники",
+    "source": "uslugi"
+   },
+   {
+    "name": "Морозильные камеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Силовое оборудование и кабельные линии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Источники бесперебойного питания",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аудиотехника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт торговых витрин",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт торгового оборудования",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автомобильная электроника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Садовая техника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Домофоны",
+    "source": "uslugi"
+   },
+   {
+    "name": "Строительные агрегаты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кассовые аппараты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Газовые колонки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт персонального электротранспорта",
+    "source": "uslugi"
+   },
+   {
+    "name": "Квадрокоптеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Медицинская техника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт измерительных приборов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Крупная строительная и сельскохозяйственная техника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Тренеры",
+  "source": "uslugi",
+  "yandex_id": "/trenery",
+  "subs": [
+   {
+    "name": "Фитнес",
+    "source": "uslugi"
+   },
+   {
+    "name": "Оздоровительный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Танцы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Боевые искусства",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хореография",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бодибилдинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Пауэрлифтинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Художественная гимнастика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Жим лежа",
+    "source": "uslugi"
+   },
+   {
+    "name": "Футбол",
+    "source": "uslugi"
+   },
+   {
+    "name": "Легкая атлетика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Плавание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шахматы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лыжный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Большой теннис",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сноуборд",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тяжелая атлетика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Настольный теннис",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спортивная гимнастика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Акробатика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хоккей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Волейбол",
+    "source": "uslugi"
+   },
+   {
+    "name": "Армрестлинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фигурное катание на льду",
+    "source": "uslugi"
+   },
+   {
+    "name": "Велоспорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кайтсерфинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автоспорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Баскетбол",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аквааэробика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Альпинизм",
+    "source": "uslugi"
+   },
+   {
+    "name": "Роллерспорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда стола для настольного тенниса",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подводный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Конный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Конькобежный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скалолазание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Биатлон",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гребля",
+    "source": "uslugi"
+   },
+   {
+    "name": "Многоборье",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бильярд",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда теннисного корта",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда поля для футбола",
+    "source": "uslugi"
+   },
+   {
+    "name": "Синхронное плавание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Прыжки в воду",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скоростной спуск на байдарках",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стрелковый спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Чирлидинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вейкбординг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скейтбординг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда зала для бадминтона",
+    "source": "uslugi"
+   },
+   {
+    "name": "Прыжки с парашютом",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда зала для баскетбола",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда зала для волейбола",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда хоккейной площадки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аренда столов для бильярда",
+    "source": "uslugi"
+   },
+   {
+    "name": "Водное поло",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спортивная рыбалка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Санный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Авиамодельный спорт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бобслей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Формула-1",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гандбол",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бадминтон",
+    "source": "uslugi"
+   },
+   {
+    "name": "Керлинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Авиационные виды спорта",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Разное",
+  "source": "uslugi",
+  "yandex_id": "/raznoe",
+  "subs": [
+   {
+    "name": "Психолог",
+    "source": "uslugi"
+   },
+   {
+    "name": "Интернет-маркетолог",
+    "source": "uslugi"
+   },
+   {
+    "name": "Копирайтер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Полиграфические услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бухгалтер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Доставка цветов",
+    "source": "uslugi"
+   },
+   {
+    "name": "SMM-продвижение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Риэлторские услуги при покупке и продаже",
+    "source": "uslugi"
+   },
+   {
+    "name": "Переводчик",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бизнес-консалтинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тайный покупатель",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обеззараживание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Постинг в интернете",
+    "source": "uslugi"
+   },
+   {
+    "name": "Трезвый водитель",
+    "source": "uslugi"
+   },
+   {
+    "name": "Страхование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Риэлторские услуги при аренде",
+    "source": "uslugi"
+   },
+   {
+    "name": "Налоговые консультанты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление памятников и надгробий",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мелкие поручения",
+    "source": "uslugi"
+   },
+   {
+    "name": "Email-маркетинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Металлообработка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление печатей и штампов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ритуальные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Рекрутер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Экскурсовод",
+    "source": "uslugi"
+   },
+   {
+    "name": "Страхование недвижимости",
+    "source": "uslugi"
+   },
+   {
+    "name": "Печать на одежде",
+    "source": "uslugi"
+   },
+   {
+    "name": "Оформление перепланировок",
+    "source": "uslugi"
+   },
+   {
+    "name": "Приватизация имущества",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт часов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аудиторские услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автоэкспертиза",
+    "source": "uslugi"
+   },
+   {
+    "name": "Риэлторские услуги при работе с зарубежной недвижимостью",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт велосипедов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фасовка товаров",
+    "source": "uslugi"
+   },
+   {
+    "name": "Плазменная и лазерная резка",
+    "source": "uslugi"
+   },
+   {
+    "name": "3D-печать",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лазерная гравировка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Реставрационные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Издательские услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шелкография",
+    "source": "uslugi"
+   },
+   {
+    "name": "Складские услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление пленки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Почтовые услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление пластиковых карт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Доставка воды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление и монтаж зеркал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Патентные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Специалист по грудному вскармливанию",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт сумок и чемоданов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Миграционные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Архивные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление пресс форм",
+    "source": "uslugi"
+   },
+   {
+    "name": "Оформлении виз и загранпаспортов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Нетрадиционная медицина",
+    "source": "uslugi"
+   },
+   {
+    "name": "Таможенные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Психиатр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт и настройка фортепиано",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химическая металлообработка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Издательство музыки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление музыкальных инструментов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Геральдика и генеалогия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подводные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Нотариус",
+    "source": "uslugi"
+   },
+   {
+    "name": "Доула",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт гитар",
+    "source": "uslugi"
+   },
+   {
+    "name": "Взрывные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт скрипки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вендинговое оборудование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт духовых музыкальных инструментов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мелиоративные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Юристы",
+  "source": "uslugi",
+  "yandex_id": "/uristy",
+  "subs": [
+   {
+    "name": "Представительство в суде",
+    "source": "uslugi"
+   },
+   {
+    "name": "Юридические документы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Арбитражные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проверка документов и договоров",
+    "source": "uslugi"
+   },
+   {
+    "name": "Юридическое сопровождение сделок",
+    "source": "uslugi"
+   },
+   {
+    "name": "Защита прав потребителей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Семейные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Взыскание долгов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Абонентское юридическое обслуживание и сопровождение бизнеса",
+    "source": "uslugi"
+   },
+   {
+    "name": "Помощь в регистрации ООО и ИП",
+    "source": "uslugi"
+   },
+   {
+    "name": "Трудовые споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Исполнительное производство",
+    "source": "uslugi"
+   },
+   {
+    "name": "Жилищные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Работа с договорами на выполнение работ",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кредитные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Наследственные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Регистрационные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Административные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Банкротство юридических лиц",
+    "source": "uslugi"
+   },
+   {
+    "name": "Земельные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Внесение изменений в учредительные документы компании",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проверка контрагента",
+    "source": "uslugi"
+   },
+   {
+    "name": "Страховые споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автомобильные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Налоговые споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ликвидация юридических лиц",
+    "source": "uslugi"
+   },
+   {
+    "name": "Уголовные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Адвокаты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Защита интеллектуальных прав",
+    "source": "uslugi"
+   },
+   {
+    "name": "Реорганизация юридических лиц",
+    "source": "uslugi"
+   },
+   {
+    "name": "Оценка рисков организации",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лицензирование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Медицинские споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Анализ рисков предприятия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проведение независимых экспертиз",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тендеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Услуги по военному праву",
+    "source": "uslugi"
+   },
+   {
+    "name": "Миграционные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Конституционные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Юридические услуги по международному праву",
+    "source": "uslugi"
+   },
+   {
+    "name": "Таможенные споры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Апостиль и легализация документов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Банкротство физических лиц",
+    "source": "extra"
+   },
+   {
+    "name": "Списание и урегулирование долгов",
+    "source": "extra"
+   },
+   {
+    "name": "Пенсионные споры",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Ремонт авто",
+  "source": "uslugi",
+  "yandex_id": "/remont-avto",
+  "subs": [
+   {
+    "name": "Шиномонтаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Двигатель",
+    "source": "uslugi"
+   },
+   {
+    "name": "Диагностика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Электрооборудование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кузовной ремонт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Помощь на дорогах",
+    "source": "uslugi"
+   },
+   {
+    "name": "Установка допоборудования",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мойка и уход за авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Трансмиссия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Техническое обслуживание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подвеска",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тонировка и автовинил",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тормозная система",
+    "source": "uslugi"
+   },
+   {
+    "name": "Отогрев авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тюнинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт грузовых авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кондиционеры и отопление",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт спецтехники",
+    "source": "uslugi"
+   },
+   {
+    "name": "Замена стекла",
+    "source": "uslugi"
+   },
+   {
+    "name": "Выхлопная система",
+    "source": "uslugi"
+   },
+   {
+    "name": "Рулевое управление",
+    "source": "uslugi"
+   },
+   {
+    "name": "Покраска",
+    "source": "uslugi"
+   },
+   {
+    "name": "Детейлинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сколы и трещины на стеклах",
+    "source": "uslugi"
+   },
+   {
+    "name": "Промывка топливной системы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт мототехники",
+    "source": "uslugi"
+   },
+   {
+    "name": "Антикоррозийная обработка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт шин и дисков",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тюнинг двигателя",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ошиповка резины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сход-развал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Выездной шиномонтаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сезонное хранение шин",
+    "source": "uslugi"
+   },
+   {
+    "name": "Переоборудование транспортных средств",
+    "source": "uslugi"
+   },
+   {
+    "name": "Газовое оборудование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тюнинг подвески",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шиномонтаж грузовых автомобилей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Техническое обслуживание газового оборудования",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт тентов грузовых авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сход-развал для грузового авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аэрография",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хромирование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Компьютеры и IT",
+  "source": "uslugi",
+  "yandex_id": "/komp_utery-i-it",
+  "subs": [
+   {
+    "name": "Сайты под ключ",
+    "source": "uslugi"
+   },
+   {
+    "name": "Компьютерная помощь",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка сайтов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка программ",
+    "source": "uslugi"
+   },
+   {
+    "name": "Администрирование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Регистрация доменов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка на Python",
+    "source": "uslugi"
+   },
+   {
+    "name": "Настройка серверов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка мобильных приложений",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка СRM и ERP",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка на С++",
+    "source": "uslugi"
+   },
+   {
+    "name": "Настройка Битрикс",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка на 1C",
+    "source": "uslugi"
+   },
+   {
+    "name": "Администрирование 1С",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка систем автоматизации электронного документооборота",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка на Java",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка игр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Заправка картриджей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Разработка навыков Алисы",
+    "source": "uslugi"
+   },
+   {
+    "name": "SEO-продвижение",
+    "source": "extra"
+   },
+   {
+    "name": "Контекстная реклама",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Хозяйство и уборка",
+  "source": "uslugi",
+  "yandex_id": "/uborka-i-hozajstvo",
+  "subs": [
+   {
+    "name": "Уборка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт одежды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Уборка территории",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт обуви",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химчистка ковров и мебели",
+    "source": "uslugi"
+   },
+   {
+    "name": "Няни",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химчистка одежды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сад и огород",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сиделки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Повара",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спил и обрезка деревьев и кустарников",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стирка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химчистка домашнего текстиля",
+    "source": "uslugi"
+   },
+   {
+    "name": "Няни на полную занятость",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химчистка кожи",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химчистка штор",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сиделки с проживанием",
+    "source": "uslugi"
+   },
+   {
+    "name": "Няни с проживанием",
+    "source": "uslugi"
+   },
+   {
+    "name": "Клининг для бизнеса",
+    "source": "extra"
+   },
+   {
+    "name": "Дома престарелых и пансионаты",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Красота",
+  "source": "uslugi",
+  "yandex_id": "/krasota",
+  "subs": [
+   {
+    "name": "Маникюр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Педикюр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Массаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Брови",
+    "source": "uslugi"
+   },
+   {
+    "name": "Парикмахер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Наращивание ресниц",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ресницы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Косметолог",
+    "source": "uslugi"
+   },
+   {
+    "name": "Макияж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Депиляция воском и шугаринг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стилист",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спа-процедуры для тела",
+    "source": "uslugi"
+   },
+   {
+    "name": "Процедуры для волос",
+    "source": "uslugi"
+   },
+   {
+    "name": "Татуаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Татуировки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Чистка лица",
+    "source": "uslugi"
+   },
+   {
+    "name": "Маникюр и педикюр для мужчин",
+    "source": "uslugi"
+   },
+   {
+    "name": "Барбер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Удаление татуировок",
+    "source": "uslugi"
+   },
+   {
+    "name": "Маникюр для детей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аппаратный массаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Детский массаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обертывание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение макияжу",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спа маникюр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Укрепление ногтей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Чистка спины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Карбокситерапия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Диетолог",
+    "source": "uslugi"
+   },
+   {
+    "name": "Наращивание волос",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лазерная эпиляция",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лечение угревой сыпи",
+    "source": "uslugi"
+   },
+   {
+    "name": "Покрытие биогелем",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аппаратная мезотерапия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Пирсинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спа-процедуры для волос",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лечебный педикюр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Электроэпиляция",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шугаринг для мужчин",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тайский массаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "LPG-массаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аппаратный пилинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фотоомоложение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стоунтерапия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фотоэпиляция",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мануальная мезотерапия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лазерная чистка лица",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мехенди",
+    "source": "uslugi"
+   },
+   {
+    "name": "Солярий",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гидромассаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Термо и биолифтинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Озонотерапия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Талассотерапия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Японская завивка волос",
+    "source": "uslugi"
+   },
+   {
+    "name": "Криомассаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Флоатинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хаммам",
+    "source": "uslugi"
+   },
+   {
+    "name": "Салоны красоты",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Дизайнеры",
+  "source": "uslugi",
+  "yandex_id": "/dizajnery",
+  "subs": [
+   {
+    "name": "Графический дизайнер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Веб-дизайнер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дизайнер интерьеров",
+    "source": "uslugi"
+   },
+   {
+    "name": "Упаковка и реклама",
+    "source": "uslugi"
+   },
+   {
+    "name": "Иллюстратор",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фирменный стиль",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фотомонтаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "UX/UI-дизайнер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Книги и издания",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ландшафтный дизайнер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Витрины и магазины",
+    "source": "uslugi"
+   },
+   {
+    "name": "3D и flash",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мероприятия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Конструкции",
+    "source": "uslugi"
+   },
+   {
+    "name": "Промышленный дизайнер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Брендирование авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Геймдизайнер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Творчество, рукоделие и хобби",
+  "source": "uslugi",
+  "yandex_id": "/tvorcestvo,-rukodelie-i-hobbi",
+  "subs": [
+   {
+    "name": "Шитье",
+    "source": "uslugi"
+   },
+   {
+    "name": "Живопись",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ювелирные изделия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вязание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление украшений",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление игрушек",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лепка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аппликация",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скрапбукинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Авторская мебель",
+    "source": "uslugi"
+   },
+   {
+    "name": "Резьба по дереву",
+    "source": "uslugi"
+   },
+   {
+    "name": "Багетные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Валяние",
+    "source": "uslugi"
+   },
+   {
+    "name": "Резьба по металлу",
+    "source": "uslugi"
+   },
+   {
+    "name": "Резьба по стеклу",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Репетиторы и обучение",
+  "source": "uslugi",
+  "yandex_id": "/repetitory-i-obucenie",
+  "subs": [
+   {
+    "name": "Английский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Репетитор по математике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Русский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам по математике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение мастеров для салонов красоты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Логопеды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение маникюру и педикюру",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам по английскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к школе",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обществознание",
+    "source": "uslugi"
+   },
+   {
+    "name": "Музыка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Химия",
+    "source": "uslugi"
+   },
+   {
+    "name": "История",
+    "source": "uslugi"
+   },
+   {
+    "name": "Информатика и компьютерные науки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Физика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курсы и мастер-классы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Литература",
+    "source": "uslugi"
+   },
+   {
+    "name": "Американский английский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Биология",
+    "source": "uslugi"
+   },
+   {
+    "name": "Русский язык для иностранцев",
+    "source": "uslugi"
+   },
+   {
+    "name": "Британский английский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Деловой английский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гитара",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение вокалу",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фортепиано",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по английскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изобразительное искусство",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде и ДВИ по математике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Английский язык с отраслевой спецификой",
+    "source": "uslugi"
+   },
+   {
+    "name": "Немецкий язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Высшая математика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Французский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Китайский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автоинструкторы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Менеджмент",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание Python",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обществознание для студентов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Экономика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по русскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Биология для студентов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Правоведение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде и ДВИ по обществознанию",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание MS Office",
+    "source": "uslugi"
+   },
+   {
+    "name": "Cкетчинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Испанский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам по изобразительному искусству",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде и ДВИ по истории",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фотография",
+    "source": "uslugi"
+   },
+   {
+    "name": "Графика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Театр",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание C и Pascal",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по биологии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бухгалтерский учет",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде и ДВИ по физике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Методики раннего развития",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к ДВИ по английскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "География",
+    "source": "uslugi"
+   },
+   {
+    "name": "Иллюстрация",
+    "source": "uslugi"
+   },
+   {
+    "name": "Олимпиады по литературе",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде и ДВИ по химии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам по немецкому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Академический и оперный вокал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание компьютерной графики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по информатике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Правоведение для студентов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Логика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Экономика для студентов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание web программирования",
+    "source": "uslugi"
+   },
+   {
+    "name": "Укулеле",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам по французскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Итальянский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Каллиграфия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ментальная арифметика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Барабаны",
+    "source": "uslugi"
+   },
+   {
+    "name": "Консультации по курсовым и дипломам по информатике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Журналистика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Специальные разделы истории",
+    "source": "uslugi"
+   },
+   {
+    "name": "Философия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кулинарные курсы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение техникам декорирования и оформления",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение лепке",
+    "source": "uslugi"
+   },
+   {
+    "name": "Коллаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание Java",
+    "source": "uslugi"
+   },
+   {
+    "name": "Корейский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Джазовый вокал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хоровое пение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка по вокалу для поступления в театральные ВУЗы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дирижирование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Деловой французский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Биохимия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение вышивке",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение художественной росписи",
+    "source": "uslugi"
+   },
+   {
+    "name": "Консультации по курсовым и дипломным работам по биологии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скрипка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение изготовлению мягкой игрушки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение бумажным техникам рукоделия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Специальные разделы географии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Репетитор по начертательной геометрии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание Delphi",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание VBA",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам и олимпиадам по испанскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Финансовая математика",
+    "source": "uslugi"
+   },
+   {
+    "name": "Консультации по курсовым и дипломным работам по бухгалтерскому учету",
+    "source": "uslugi"
+   },
+   {
+    "name": "Звукорежиссура",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бас-гитара",
+    "source": "uslugi"
+   },
+   {
+    "name": "ДВИ по литературе",
+    "source": "uslugi"
+   },
+   {
+    "name": "ОБЖ",
+    "source": "uslugi"
+   },
+   {
+    "name": "Народный вокал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение косметологии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Флейта",
+    "source": "uslugi"
+   },
+   {
+    "name": "Чешский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Арабский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курсы кройки и шитья",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по экономике",
+    "source": "uslugi"
+   },
+   {
+    "name": "Немецкий язык с отраслевой спецификой",
+    "source": "uslugi"
+   },
+   {
+    "name": "Рок-вокал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание 1С",
+    "source": "uslugi"
+   },
+   {
+    "name": "Японский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по правоведению",
+    "source": "uslugi"
+   },
+   {
+    "name": "Деловой китайский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение бисероплетению",
+    "source": "uslugi"
+   },
+   {
+    "name": "Преподавание SQL",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде и ДВИ по географии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по китайскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Деловой испанский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Олимпиады по менеджменту",
+    "source": "uslugi"
+   },
+   {
+    "name": "Саксофон",
+    "source": "uslugi"
+   },
+   {
+    "name": "Турецкий язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хинди",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курсы вождения на английском языке",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение технике папье-маше",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение искусству керамики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Флористический дизайн",
+    "source": "uslugi"
+   },
+   {
+    "name": "Деловой итальянский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Иврит",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курсы для будущих мам",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изучение биологии на английском языке",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение экстремальному вождению",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение резьбе по дереву",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение кройке и шитью",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение валянию из шерсти",
+    "source": "uslugi"
+   },
+   {
+    "name": "Иконопись",
+    "source": "uslugi"
+   },
+   {
+    "name": "Деловой японский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Таджикский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Азербайджанский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курсы сомелье",
+    "source": "uslugi"
+   },
+   {
+    "name": "Медицинская латынь",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзаменам по арабскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к экзамену по турецкому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Церковное пение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение искусству мозаики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по итальянскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Аккордеон",
+    "source": "uslugi"
+   },
+   {
+    "name": "Балалайка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Виолончель",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кларнет",
+    "source": "uslugi"
+   },
+   {
+    "name": "Валторна",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тромбон",
+    "source": "uslugi"
+   },
+   {
+    "name": "Венгерский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Узбекский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шведский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сербский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Санскрит",
+    "source": "uslugi"
+   },
+   {
+    "name": "Португальский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Польский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Норвежский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Латынь",
+    "source": "uslugi"
+   },
+   {
+    "name": "Датский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изучение вэньяня",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обучение таджвиду",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по корейскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по японскому языку",
+    "source": "uslugi"
+   },
+   {
+    "name": "Подготовка к олимпиаде по бухгалтерскому учету",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бухгалтерский учет МСФО",
+    "source": "uslugi"
+   },
+   {
+    "name": "Альт",
+    "source": "uslugi"
+   },
+   {
+    "name": "Труба",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гусли",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гобой",
+    "source": "uslugi"
+   },
+   {
+    "name": "Контрабас",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вьетнамский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Тайский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Суахили",
+    "source": "uslugi"
+   },
+   {
+    "name": "Словенский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Румынский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Македонский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Литовский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Латышский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Индонезийский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Хорватский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Грузинский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Греческий язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Голландский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Финский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Эстонский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Болгарский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Армянский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Албанский язык",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Перевозки и курьеры",
+  "source": "uslugi",
+  "yandex_id": "/gruzoperevozki-i-kur_ery",
+  "subs": [
+   {
+    "name": "Грузоперевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Услуги грузчиков",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курьеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные перевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вывоз мусора",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перевозка стройматериалов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Курьеры на авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перевозка продуктов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Пассажирские перевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перевозка негабаритных грузов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Эвакуаторы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Услуги манипулятора",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные пассажирские перевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные перевозки автомобилей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные перевозки животных",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перевозка продуктов с рефрижератором",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные перевозки сыпучих грузов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Контейнерные перевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Раздельный вывоз мусора",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные перевозки продуктов с рефрижератором",
+    "source": "uslugi"
+   },
+   {
+    "name": "Эвакуаторы с манипулятором",
+    "source": "uslugi"
+   },
+   {
+    "name": "Эвакуаторы для грузового авто",
+    "source": "uslugi"
+   },
+   {
+    "name": "Междугородные перевозки наливных грузов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Грузовые авиаперевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Железнодорожные перевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перевозка больных",
+    "source": "uslugi"
+   },
+   {
+    "name": "Водные перевозки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Таможенное оформление и доставка из-за рубежа",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Артисты",
+  "source": "uslugi",
+  "yandex_id": "/artisty",
+  "subs": [
+   {
+    "name": "Ансамбли",
+    "source": "uslugi"
+   },
+   {
+    "name": "Певцы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шоу",
+    "source": "uslugi"
+   },
+   {
+    "name": "Музыканты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Танцоры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кавер группы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Музыкальные группы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гитаристы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Инструментальные коллективы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Пианисты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скрипачи",
+    "source": "uslugi"
+   },
+   {
+    "name": "Саксофонисты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фокусники",
+    "source": "uslugi"
+   },
+   {
+    "name": "Комедия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Цирк",
+    "source": "uslugi"
+   },
+   {
+    "name": "Звезды эстрады",
+    "source": "uslugi"
+   },
+   {
+    "name": "Баянисты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Фото, видео, аудио",
+  "source": "uslugi",
+  "yandex_id": "/foto-i-video",
+  "subs": [
+   {
+    "name": "Фотосессия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Создание и монтаж видеороликов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Постобработка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Видеосъемка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фото на документы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Модели для съемок",
+    "source": "uslugi"
+   },
+   {
+    "name": "Запись музыки и песен",
+    "source": "uslugi"
+   },
+   {
+    "name": "Запись аудиороликов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Cъёмка с квадрокоптера",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фотосессия в стиле ню",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дикторы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Панорамы и туры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Создание 3D-видеороликов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Оцифровка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Ремонт и строительство",
+  "source": "uslugi",
+  "yandex_id": "/remont-i-stroitel_stvo",
+  "subs": [
+   {
+    "name": "Ремонт квартир и домов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Электромонтажные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мастер на час",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сантехнические работы и отопление",
+    "source": "uslugi"
+   },
+   {
+    "name": "Водоснабжение и канализация",
+    "source": "uslugi"
+   },
+   {
+    "name": "Полы и напольные покрытия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Строительство домов и коттеджей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Обои и малярные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Плиточные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Отделка деревянных домов, бань, саун",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт офиса",
+    "source": "uslugi"
+   },
+   {
+    "name": "Снос и демонтаж",
+    "source": "uslugi"
+   },
+   {
+    "name": "Заборы и ограждения",
+    "source": "uslugi"
+   },
+   {
+    "name": "Потолки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сборка и ремонт мебели",
+    "source": "uslugi"
+   },
+   {
+    "name": "Строительство бань, саун и бассейнов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление мебели",
+    "source": "uslugi"
+   },
+   {
+    "name": "Окна и балконы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кровельные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бетонные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фасадные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Установка дверей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Земляные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Охранные системы и контроль доступа",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление кухни",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гипсокартон и гипсоволокно",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фундамент",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт и установка замков",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сварочные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Строительство гаражей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Электродуговая сварка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление окон",
+    "source": "uslugi"
+   },
+   {
+    "name": "Демонтаж металлоконструкций",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кладочные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проектирование и сметы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт дверей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вентиляция",
+    "source": "uslugi"
+   },
+   {
+    "name": "Высотные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Установка генераторов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лестницы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дорожное строительство",
+    "source": "uslugi"
+   },
+   {
+    "name": "Промышленные полы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление шкафов-купе",
+    "source": "uslugi"
+   },
+   {
+    "name": "Установка карнизов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Бурение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Слаботочные системы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Теплосчетчики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кладка печей и каминов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Столярные и плотницкие работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Умный дом",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление металлоконструкций",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изоляция",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проектирование зданий",
+    "source": "uslugi"
+   },
+   {
+    "name": "Технический надзор",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт электрокотлов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гидроиспытания трубопроводов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Жалюзи",
+    "source": "uslugi"
+   },
+   {
+    "name": "Озеленение",
+    "source": "uslugi"
+   },
+   {
+    "name": "Реставрация и эмалировка ванн",
+    "source": "uslugi"
+   },
+   {
+    "name": "Чистка труб",
+    "source": "uslugi"
+   },
+   {
+    "name": "Стекольные услуги",
+    "source": "uslugi"
+   },
+   {
+    "name": "Алмазное сверление и резка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Рольставни и секционные ворота",
+    "source": "uslugi"
+   },
+   {
+    "name": "Электромонтажные работы — срочный выезд",
+    "source": "uslugi"
+   },
+   {
+    "name": "Поверка счетчиков",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вскрытие замков",
+    "source": "uslugi"
+   },
+   {
+    "name": "Газовая сварка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ремонт и установка кодовых замков",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кадастровые работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Перетяжка и ремонт мягкой мебели",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление металлических дверей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лепнина и мозаики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проектирование металлоконструкций",
+    "source": "uslugi"
+   },
+   {
+    "name": "Герметизация фасадов",
+    "source": "uslugi"
+   },
+   {
+    "name": "Огнезащитная обработка",
+    "source": "uslugi"
+   },
+   {
+    "name": "Системы пожаротушения",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление плитки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изыскательные работы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Сантехнические работы и отопление — аварийный выезд",
+    "source": "uslugi"
+   },
+   {
+    "name": "Роспись стен",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление кованых изделий",
+    "source": "uslugi"
+   },
+   {
+    "name": "Водоемы и фонтаны",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление дверей из дерева",
+    "source": "uslugi"
+   },
+   {
+    "name": "Газификация",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление ключей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление витражей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Антенны",
+    "source": "uslugi"
+   },
+   {
+    "name": "Пошив штор",
+    "source": "uslugi"
+   },
+   {
+    "name": "Изготовление скульптур",
+    "source": "uslugi"
+   },
+   {
+    "name": "Умные счётчики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Альтернативная энергия",
+    "source": "uslugi"
+   },
+   {
+    "name": "Проектирование газовых сетей",
+    "source": "uslugi"
+   },
+   {
+    "name": "Маркизы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Художественное литье из металла",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Организация мероприятий",
+  "source": "uslugi",
+  "yandex_id": "/organizazia-meropriatij",
+  "subs": [
+   {
+    "name": "Праздник под ключ",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ведущие",
+    "source": "uslugi"
+   },
+   {
+    "name": "Торты на заказ",
+    "source": "uslugi"
+   },
+   {
+    "name": "Кейтеринг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Декор и внешний вид",
+    "source": "uslugi"
+   },
+   {
+    "name": "Организация бизнес-мероприятий",
+    "source": "uslugi"
+   },
+   {
+    "name": "Организация интерактива",
+    "source": "uslugi"
+   },
+   {
+    "name": "PR акции",
+    "source": "uslugi"
+   },
+   {
+    "name": "Промоутер",
+    "source": "uslugi"
+   },
+   {
+    "name": "Расклеивание объявлений",
+    "source": "uslugi"
+   },
+   {
+    "name": "Корпоративы",
+    "source": "extra"
+   },
+   {
+    "name": "Детские праздники",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Аренда",
+  "source": "uslugi",
+  "yandex_id": "/arenda",
+  "subs": [
+   {
+    "name": "Экскаваторы и погрузчики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автокраны и автовышки",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автомобили",
+    "source": "uslugi"
+   },
+   {
+    "name": "Самосвалы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Оборудование",
+    "source": "uslugi"
+   },
+   {
+    "name": "Дорожная спецтехника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мини-экскаваторы и погрузчики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Строительные инструменты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Ямобуры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Экскаваторы-планировщики",
+    "source": "uslugi"
+   },
+   {
+    "name": "Персонал",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автомобили под такси",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автомобили-длинномеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Передвижные компрессоры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автогидроподъёмники",
+    "source": "uslugi"
+   },
+   {
+    "name": "Спортивный инвентарь",
+    "source": "uslugi"
+   },
+   {
+    "name": "Велосипеды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фотостудии",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мусоровозы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Низкорамные платформы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Фото и видеотехника",
+    "source": "uslugi"
+   },
+   {
+    "name": "Илососы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Автобетононасосы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лыжи и сноуборды",
+    "source": "uslugi"
+   },
+   {
+    "name": "Шатры",
+    "source": "uslugi"
+   },
+   {
+    "name": "Лимузины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Грейферы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Выездные аттракционы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Башенные краны",
+    "source": "uslugi"
+   },
+   {
+    "name": "Поливомоечные машины",
+    "source": "uslugi"
+   },
+   {
+    "name": "Костюмы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Скутеры",
+    "source": "uslugi"
+   },
+   {
+    "name": "IT аутсорсинг",
+    "source": "uslugi"
+   },
+   {
+    "name": "Вертолеты",
+    "source": "uslugi"
+   },
+   {
+    "name": "Мотоциклы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Теплоходы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Гидроциклы",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Охрана",
+  "source": "uslugi",
+  "yandex_id": "/ohrana-i-detektivy",
+  "subs": [
+   {
+    "name": "Охрана",
+    "source": "uslugi"
+   },
+   {
+    "name": "Другое",
+    "source": "uslugi"
+   }
+  ]
+ },
+ {
+  "main": "Авто",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Автомобильные инструменты",
+    "source": "market"
+   },
+   {
+    "name": "Автохимия и автокосметика",
+    "source": "market"
+   },
+   {
+    "name": "Аксессуары и оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Аудио- и видеотехника",
+    "source": "market"
+   },
+   {
+    "name": "Запчасти",
+    "source": "market"
+   },
+   {
+    "name": "Масла и технические жидкости",
+    "source": "market"
+   },
+   {
+    "name": "Мототехника",
+    "source": "market"
+   },
+   {
+    "name": "Противоугонные устройства",
+    "source": "market"
+   },
+   {
+    "name": "Спецтехника",
+    "source": "market"
+   },
+   {
+    "name": "Транспорт",
+    "source": "market"
+   },
+   {
+    "name": "Шины и диски",
+    "source": "market"
+   },
+   {
+    "name": "Электроника",
+    "source": "market"
+   },
+   {
+    "name": "Новые автомобили",
+    "source": "extra"
+   },
+   {
+    "name": "Автомобили с пробегом",
+    "source": "extra"
+   },
+   {
+    "name": "Такси и каршеринг",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Аптека",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Бальзамы, настойки, вытяжки, добавки",
+    "source": "market"
+   },
+   {
+    "name": "Витамины и минералы",
+    "source": "market"
+   },
+   {
+    "name": "Дезинфицирующие средства",
+    "source": "market"
+   },
+   {
+    "name": "Диагностические тесты",
+    "source": "market"
+   },
+   {
+    "name": "Интим-товары",
+    "source": "market"
+   },
+   {
+    "name": "Лекарственные препараты и БАД",
+    "source": "market"
+   },
+   {
+    "name": "Лекарственные растения",
+    "source": "market"
+   },
+   {
+    "name": "Массажеры",
+    "source": "market"
+   },
+   {
+    "name": "Медицинские изделия",
+    "source": "market"
+   },
+   {
+    "name": "Медицинские материалы",
+    "source": "market"
+   },
+   {
+    "name": "Медицинские приборы",
+    "source": "market"
+   },
+   {
+    "name": "Оптика",
+    "source": "market"
+   },
+   {
+    "name": "Ортопедические изделия",
+    "source": "market"
+   },
+   {
+    "name": "Питание специального назначения",
+    "source": "market"
+   },
+   {
+    "name": "Уход за больными",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Бытовая техника",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Встраиваемая техника",
+    "source": "market"
+   },
+   {
+    "name": "Климатическая техника",
+    "source": "market"
+   },
+   {
+    "name": "Крупная техника для кухни",
+    "source": "market"
+   },
+   {
+    "name": "Мелкая техника для кухни",
+    "source": "market"
+   },
+   {
+    "name": "Техника для дома",
+    "source": "market"
+   },
+   {
+    "name": "Техника для красоты",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Дача, сад и огород",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Бассейны и аксессуары",
+    "source": "market"
+   },
+   {
+    "name": "Биотуалеты и аксессуары",
+    "source": "market"
+   },
+   {
+    "name": "Души и умывальники",
+    "source": "market"
+   },
+   {
+    "name": "Парники и теплицы",
+    "source": "market"
+   },
+   {
+    "name": "Пикник, барбекю, гриль",
+    "source": "market"
+   },
+   {
+    "name": "Садовая мебель",
+    "source": "market"
+   },
+   {
+    "name": "Садовая техника",
+    "source": "market"
+   },
+   {
+    "name": "Садовый декор",
+    "source": "market"
+   },
+   {
+    "name": "Садовый инвентарь и инструменты",
+    "source": "market"
+   },
+   {
+    "name": "Сауны и бани",
+    "source": "market"
+   },
+   {
+    "name": "Семена и саженцы",
+    "source": "market"
+   },
+   {
+    "name": "Удобрения и уход за растениями",
+    "source": "market"
+   },
+   {
+    "name": "Фонтаны и пруды",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Детские товары",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Детский спорт",
+    "source": "market"
+   },
+   {
+    "name": "Игрушки и игры",
+    "source": "market"
+   },
+   {
+    "name": "Развитие и обучение",
+    "source": "market"
+   },
+   {
+    "name": "Товары для мам и малышей",
+    "source": "market"
+   },
+   {
+    "name": "Товары для школы",
+    "source": "market"
+   },
+   {
+    "name": "Хобби и творчество",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Досуг и развлечения",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Видеофильмы",
+    "source": "market"
+   },
+   {
+    "name": "Гадания и предсказания",
+    "source": "market"
+   },
+   {
+    "name": "Игры для компаний",
+    "source": "market"
+   },
+   {
+    "name": "Иконы и церковная утварь",
+    "source": "market"
+   },
+   {
+    "name": "Кальяны и аксессуары",
+    "source": "market"
+   },
+   {
+    "name": "Музыка",
+    "source": "market"
+   },
+   {
+    "name": "Музыкальные инструменты",
+    "source": "market"
+   },
+   {
+    "name": "Нумизматика и филателия",
+    "source": "market"
+   },
+   {
+    "name": "Онлайн-подписки и карты оплаты",
+    "source": "market"
+   },
+   {
+    "name": "Подарочные наборы",
+    "source": "market"
+   },
+   {
+    "name": "Подарочные сертификаты",
+    "source": "market"
+   },
+   {
+    "name": "Ритуальные товары",
+    "source": "market"
+   },
+   {
+    "name": "Сувенирная продукция",
+    "source": "market"
+   },
+   {
+    "name": "Траурная флористика",
+    "source": "market"
+   },
+   {
+    "name": "Туры",
+    "source": "market"
+   },
+   {
+    "name": "Флаги и гербы",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Книги",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Аудиокниги",
+    "source": "market"
+   },
+   {
+    "name": "Букинистические книги",
+    "source": "market"
+   },
+   {
+    "name": "Журналы и газеты",
+    "source": "market"
+   },
+   {
+    "name": "Книги для детей",
+    "source": "market"
+   },
+   {
+    "name": "Комиксы и манга",
+    "source": "market"
+   },
+   {
+    "name": "Литература на иностранных языках",
+    "source": "market"
+   },
+   {
+    "name": "Любовь и эротика",
+    "source": "market"
+   },
+   {
+    "name": "Нехудожественная литература",
+    "source": "market"
+   },
+   {
+    "name": "Учебная литература",
+    "source": "market"
+   },
+   {
+    "name": "Художественная литература",
+    "source": "market"
+   },
+   {
+    "name": "Цифровые книги",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Компьютерная техника",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Аксессуары",
+    "source": "market"
+   },
+   {
+    "name": "Источники бесперебойного питания",
+    "source": "market"
+   },
+   {
+    "name": "Комплектующие",
+    "source": "market"
+   },
+   {
+    "name": "Компьютеры",
+    "source": "market"
+   },
+   {
+    "name": "Накопители",
+    "source": "market"
+   },
+   {
+    "name": "Оборудование для презентаций",
+    "source": "market"
+   },
+   {
+    "name": "Организация рабочего места",
+    "source": "market"
+   },
+   {
+    "name": "Оргтехника",
+    "source": "market"
+   },
+   {
+    "name": "Периферийные устройства",
+    "source": "market"
+   },
+   {
+    "name": "Программное обеспечение",
+    "source": "market"
+   },
+   {
+    "name": "Расходные материалы",
+    "source": "market"
+   },
+   {
+    "name": "Сетевое оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Оборудование",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Банковское оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Весы для животных",
+    "source": "market"
+   },
+   {
+    "name": "Издательство и полиграфия",
+    "source": "market"
+   },
+   {
+    "name": "Информационные табло",
+    "source": "market"
+   },
+   {
+    "name": "Лабораторное оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Лифтовое оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Оборудование для магазинов",
+    "source": "market"
+   },
+   {
+    "name": "Оборудование для ремонта электроники",
+    "source": "market"
+   },
+   {
+    "name": "Охрана и сигнализация",
+    "source": "market"
+   },
+   {
+    "name": "Пищевое оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Предупредительные наклейки",
+    "source": "market"
+   },
+   {
+    "name": "Промышленное климатическое оборудование",
+    "source": "market"
+   },
+   {
+    "name": "Промышленное производство",
+    "source": "market"
+   },
+   {
+    "name": "Рабочая одежда и обувь",
+    "source": "market"
+   },
+   {
+    "name": "Рекламные конструкции и материалы",
+    "source": "market"
+   },
+   {
+    "name": "Строительство",
+    "source": "market"
+   },
+   {
+    "name": "Сфера услуг",
+    "source": "market"
+   },
+   {
+    "name": "Сценическое и аудиооборудование",
+    "source": "market"
+   },
+   {
+    "name": "Чистящая и моющая техника",
+    "source": "market"
+   },
+   {
+    "name": "Металлоконструкции и металлопрокат",
+    "source": "extra"
+   },
+   {
+    "name": "Медицинское оборудование",
+    "source": "extra"
+   },
+   {
+    "name": "Энергетика и генераторы",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Одежда, обувь и аксессуары",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Аксессуары",
+    "source": "market"
+   },
+   {
+    "name": "Детская одежда",
+    "source": "market"
+   },
+   {
+    "name": "Женская одежда",
+    "source": "market"
+   },
+   {
+    "name": "Мужская одежда",
+    "source": "market"
+   },
+   {
+    "name": "Обувь",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Продукты",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Алкоголь",
+    "source": "market"
+   },
+   {
+    "name": "Бакалейные товары",
+    "source": "market"
+   },
+   {
+    "name": "Безалкогольное пиво и вино",
+    "source": "market"
+   },
+   {
+    "name": "Безалкогольные напитки",
+    "source": "market"
+   },
+   {
+    "name": "Все для выпечки",
+    "source": "market"
+   },
+   {
+    "name": "Диетическое и лечебное питание",
+    "source": "market"
+   },
+   {
+    "name": "Замороженные продукты",
+    "source": "market"
+   },
+   {
+    "name": "Кондитерские изделия",
+    "source": "market"
+   },
+   {
+    "name": "Консервация",
+    "source": "market"
+   },
+   {
+    "name": "Кулинария",
+    "source": "market"
+   },
+   {
+    "name": "Молочная гастрономия",
+    "source": "market"
+   },
+   {
+    "name": "Мясная гастрономия",
+    "source": "market"
+   },
+   {
+    "name": "Рыбная гастрономия",
+    "source": "market"
+   },
+   {
+    "name": "Системы нагревания, электронные испарители и аксессуары",
+    "source": "market"
+   },
+   {
+    "name": "Фрукты, овощи и грибы",
+    "source": "market"
+   },
+   {
+    "name": "Хлеб и выпечка",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Спорт и отдых",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Бокс и единоборства",
+    "source": "market"
+   },
+   {
+    "name": "Велоспорт",
+    "source": "market"
+   },
+   {
+    "name": "Водный спорт",
+    "source": "market"
+   },
+   {
+    "name": "Зимние виды спорта",
+    "source": "market"
+   },
+   {
+    "name": "Игры",
+    "source": "market"
+   },
+   {
+    "name": "Командные виды спорта",
+    "source": "market"
+   },
+   {
+    "name": "Конный спорт",
+    "source": "market"
+   },
+   {
+    "name": "Моноколеса и гироскутеры",
+    "source": "market"
+   },
+   {
+    "name": "Охота и рыбалка",
+    "source": "market"
+   },
+   {
+    "name": "Роликовые коньки",
+    "source": "market"
+   },
+   {
+    "name": "Самокаты",
+    "source": "market"
+   },
+   {
+    "name": "Скейтбординг",
+    "source": "market"
+   },
+   {
+    "name": "Спортивная защита",
+    "source": "market"
+   },
+   {
+    "name": "Стрелковый спорт",
+    "source": "market"
+   },
+   {
+    "name": "Тренажеры и фитнес",
+    "source": "market"
+   },
+   {
+    "name": "Туризм и отдых на природе",
+    "source": "market"
+   },
+   {
+    "name": "Экстремальные виды спорта",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Строительство и ремонт",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Водоснабжение",
+    "source": "market"
+   },
+   {
+    "name": "Двери, окна и скобяные изделия",
+    "source": "market"
+   },
+   {
+    "name": "Инструменты",
+    "source": "market"
+   },
+   {
+    "name": "Материалы",
+    "source": "market"
+   },
+   {
+    "name": "Отопление и вентиляция",
+    "source": "market"
+   },
+   {
+    "name": "Сантехника",
+    "source": "market"
+   },
+   {
+    "name": "Электрика",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Товары для дома",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Антиквариат",
+    "source": "market"
+   },
+   {
+    "name": "Бытовая химия",
+    "source": "market"
+   },
+   {
+    "name": "Интерьер",
+    "source": "market"
+   },
+   {
+    "name": "Мебель",
+    "source": "market"
+   },
+   {
+    "name": "Освещение",
+    "source": "market"
+   },
+   {
+    "name": "Посуда и кухонные принадлежности",
+    "source": "market"
+   },
+   {
+    "name": "Текстиль",
+    "source": "market"
+   },
+   {
+    "name": "Товары для праздников",
+    "source": "market"
+   },
+   {
+    "name": "Хозяйственные товары",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Товары для животных",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Амуниция для собак",
+    "source": "market"
+   },
+   {
+    "name": "Ветаптека",
+    "source": "market"
+   },
+   {
+    "name": "Груминг и уход",
+    "source": "market"
+   },
+   {
+    "name": "Игрушки для кошек и собак",
+    "source": "market"
+   },
+   {
+    "name": "Игрушки и декор для грызунов",
+    "source": "market"
+   },
+   {
+    "name": "Игрушки и декор для птиц",
+    "source": "market"
+   },
+   {
+    "name": "Клетки для птиц",
+    "source": "market"
+   },
+   {
+    "name": "Клетки и домики для грызунов",
+    "source": "market"
+   },
+   {
+    "name": "Клетки, вольеры, будки для собак",
+    "source": "market"
+   },
+   {
+    "name": "Когтеточки и комплексы для кошек",
+    "source": "market"
+   },
+   {
+    "name": "Комбикорма",
+    "source": "market"
+   },
+   {
+    "name": "Корма для грызунов и хорьков",
+    "source": "market"
+   },
+   {
+    "name": "Корма для кошек и собак",
+    "source": "market"
+   },
+   {
+    "name": "Корма для птиц",
+    "source": "market"
+   },
+   {
+    "name": "Косметика и гигиена",
+    "source": "market"
+   },
+   {
+    "name": "Лакомства для грызунов",
+    "source": "market"
+   },
+   {
+    "name": "Лакомства для кошек",
+    "source": "market"
+   },
+   {
+    "name": "Лакомства для птиц",
+    "source": "market"
+   },
+   {
+    "name": "Лакомства для собак",
+    "source": "market"
+   },
+   {
+    "name": "Лежаки, домики, спальные места",
+    "source": "market"
+   },
+   {
+    "name": "Миски, кормушки и поилки",
+    "source": "market"
+   },
+   {
+    "name": "Наполнители для кошачьих туалетов",
+    "source": "market"
+   },
+   {
+    "name": "Одежда и обувь",
+    "source": "market"
+   },
+   {
+    "name": "Поилки и кормушки для грызунов, хорьков и кроликов",
+    "source": "market"
+   },
+   {
+    "name": "Сено, наполнители для птиц и грызунов",
+    "source": "market"
+   },
+   {
+    "name": "Товары для рыб и рептилий",
+    "source": "market"
+   },
+   {
+    "name": "Транспортировка, переноски",
+    "source": "market"
+   },
+   {
+    "name": "Туалеты и аксессуары для грызунов",
+    "source": "market"
+   },
+   {
+    "name": "Туалеты и аксессуары для кошек",
+    "source": "market"
+   },
+   {
+    "name": "Туалеты и аксессуары для собак",
+    "source": "market"
+   },
+   {
+    "name": "Шлейки и поводки для грызунов и хорьков",
+    "source": "market"
+   },
+   {
+    "name": "Шлейки, ошейники для кошек",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Товары для красоты",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Косметика, парфюмерия и уход",
+    "source": "market"
+   },
+   {
+    "name": "Средства и предметы гигиены",
+    "source": "market"
+   },
+   {
+    "name": "Техника для красоты и здоровья",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Цветы, букеты, композиции",
+  "source": "market",
+  "subs": [
+   {
+    "name": "Цветы и букеты",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Электроника",
+  "source": "market",
+  "subs": [
+   {
+    "name": "GPS-навигация",
+    "source": "market"
+   },
+   {
+    "name": "Аудио- и видеотехника",
+    "source": "market"
+   },
+   {
+    "name": "Гарантийные сертификаты",
+    "source": "market"
+   },
+   {
+    "name": "Игровые приставки",
+    "source": "market"
+   },
+   {
+    "name": "Оптические приборы",
+    "source": "market"
+   },
+   {
+    "name": "Портативная техника",
+    "source": "market"
+   },
+   {
+    "name": "Телефоны",
+    "source": "market"
+   },
+   {
+    "name": "Фото и видеокамеры",
+    "source": "market"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Медицина и здоровье",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Стоматология",
+    "source": "extra"
+   },
+   {
+    "name": "Имплантация зубов",
+    "source": "extra"
+   },
+   {
+    "name": "Протезирование зубов и брекеты",
+    "source": "extra"
+   },
+   {
+    "name": "Клиники и медцентры",
+    "source": "extra"
+   },
+   {
+    "name": "Анализы и диагностика",
+    "source": "extra"
+   },
+   {
+    "name": "Пластическая хирургия",
+    "source": "extra"
+   },
+   {
+    "name": "Офтальмология",
+    "source": "extra"
+   },
+   {
+    "name": "Лечение зависимостей",
+    "source": "extra"
+   },
+   {
+    "name": "Похудение",
+    "source": "extra"
+   },
+   {
+    "name": "Санатории",
+    "source": "extra"
+   },
+   {
+    "name": "Реабилитация и протезирование",
+    "source": "extra"
+   },
+   {
+    "name": "Онкология",
+    "source": "extra"
+   },
+   {
+    "name": "Психиатрия и психотерапия",
+    "source": "extra"
+   },
+   {
+    "name": "Поиск врача и запись",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Недвижимость",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Новостройки",
+    "source": "extra"
+   },
+   {
+    "name": "Вторичное жильё",
+    "source": "extra"
+   },
+   {
+    "name": "Загородная недвижимость и участки",
+    "source": "extra"
+   },
+   {
+    "name": "Коммерческая недвижимость",
+    "source": "extra"
+   },
+   {
+    "name": "Аренда жилья",
+    "source": "extra"
+   },
+   {
+    "name": "Аренда офисов и складов",
+    "source": "extra"
+   },
+   {
+    "name": "Зарубежная недвижимость",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Финансы и страхование",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Банки и РКО",
+    "source": "extra"
+   },
+   {
+    "name": "Кредиты",
+    "source": "extra"
+   },
+   {
+    "name": "Кредитные карты",
+    "source": "extra"
+   },
+   {
+    "name": "Дебетовые карты",
+    "source": "extra"
+   },
+   {
+    "name": "Микрозаймы",
+    "source": "extra"
+   },
+   {
+    "name": "Ипотека",
+    "source": "extra"
+   },
+   {
+    "name": "Автокредит",
+    "source": "extra"
+   },
+   {
+    "name": "Вклады",
+    "source": "extra"
+   },
+   {
+    "name": "Инвестиции",
+    "source": "extra"
+   },
+   {
+    "name": "Лизинг",
+    "source": "extra"
+   },
+   {
+    "name": "Страхование",
+    "source": "extra"
+   },
+   {
+    "name": "Платёжные сервисы и эквайринг",
+    "source": "extra"
+   },
+   {
+    "name": "Скупка золота и ломбарды",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Бизнес-сервисы и ПО",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "CRM-системы",
+    "source": "extra"
+   },
+   {
+    "name": "Телефония и виртуальная АТС",
+    "source": "extra"
+   },
+   {
+    "name": "Рекламные платформы и продвижение",
+    "source": "extra"
+   },
+   {
+    "name": "Искусственный интеллект",
+    "source": "extra"
+   },
+   {
+    "name": "Облака, хостинг, дата-центры",
+    "source": "extra"
+   },
+   {
+    "name": "ЭДО и электронная подпись",
+    "source": "extra"
+   },
+   {
+    "name": "1С и учётные системы",
+    "source": "extra"
+   },
+   {
+    "name": "Информационная безопасность",
+    "source": "extra"
+   },
+   {
+    "name": "Маркетплейсы для продавцов",
+    "source": "extra"
+   },
+   {
+    "name": "Франшизы и готовый бизнес",
+    "source": "extra"
+   },
+   {
+    "name": "Логистика и фулфилмент",
+    "source": "extra"
+   },
+   {
+    "name": "Консалтинг",
+    "source": "extra"
+   },
+   {
+    "name": "Бизнес-мероприятия и выставки",
+    "source": "extra"
+   },
+   {
+    "name": "HR-сервисы и поиск персонала",
+    "source": "extra"
+   },
+   {
+    "name": "Полиграфия и наружная реклама",
+    "source": "extra"
+   },
+   {
+    "name": "Программное обеспечение",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Связь, интернет, ЖКХ",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Мобильная связь",
+    "source": "extra"
+   },
+   {
+    "name": "Домашний интернет и ТВ",
+    "source": "extra"
+   },
+   {
+    "name": "Браузеры и приложения",
+    "source": "extra"
+   },
+   {
+    "name": "VPN",
+    "source": "extra"
+   },
+   {
+    "name": "Wi-Fi",
+    "source": "extra"
+   },
+   {
+    "name": "Энергоснабжение",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Образование и курсы",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Онлайн-курсы профессий",
+    "source": "extra"
+   },
+   {
+    "name": "IT-курсы",
+    "source": "extra"
+   },
+   {
+    "name": "Курсы для детей",
+    "source": "extra"
+   },
+   {
+    "name": "Вузы и колледжи",
+    "source": "extra"
+   },
+   {
+    "name": "Детские сады и частные школы",
+    "source": "extra"
+   },
+   {
+    "name": "Языковые курсы",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Туризм и отдых",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Отели",
+    "source": "extra"
+   },
+   {
+    "name": "Туры и путёвки",
+    "source": "extra"
+   },
+   {
+    "name": "Авиа и ж/д билеты",
+    "source": "extra"
+   },
+   {
+    "name": "Базы отдыха и бани",
+    "source": "extra"
+   },
+   {
+    "name": "Экскурсии и активный отдых",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Развлечения и медиа",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Новости и СМИ",
+    "source": "extra"
+   },
+   {
+    "name": "Кино, сериалы, онлайн-кинотеатры",
+    "source": "extra"
+   },
+   {
+    "name": "Музыка",
+    "source": "extra"
+   },
+   {
+    "name": "Игры и игровая валюта",
+    "source": "extra"
+   },
+   {
+    "name": "Концерты, театр, цирк",
+    "source": "extra"
+   },
+   {
+    "name": "Развлекательные центры и квесты",
+    "source": "extra"
+   },
+   {
+    "name": "Ставки и лотереи",
+    "source": "extra"
+   },
+   {
+    "name": "Эзотерика и астрология",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Еда и рестораны",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Рестораны и кафе",
+    "source": "extra"
+   },
+   {
+    "name": "Доставка еды",
+    "source": "extra"
+   },
+   {
+    "name": "Доставка продуктов",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Работа и вакансии",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Вакансии",
+    "source": "extra"
+   },
+   {
+    "name": "Работа в такси и доставке",
+    "source": "extra"
+   },
+   {
+    "name": "Военная служба по контракту",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Госуслуги и общество",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Пенсии и льготы",
+    "source": "extra"
+   },
+   {
+    "name": "Налоговые вычеты и выплаты",
+    "source": "extra"
+   },
+   {
+    "name": "Благотворительность",
+    "source": "extra"
+   },
+   {
+    "name": "Госсервисы",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Магазины и маркетплейсы",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Маркетплейсы",
+    "source": "extra"
+   },
+   {
+    "name": "Интернет-магазины и торговые сети",
+    "source": "extra"
+   },
+   {
+    "name": "Другое",
+    "source": "extra"
+   }
+  ]
+ },
+ {
+  "main": "Не определено",
+  "source": "extra",
+  "subs": [
+   {
+    "name": "Не определено",
+    "source": "extra"
+   }
+  ]
+ }
+]

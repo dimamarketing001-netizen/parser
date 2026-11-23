@@ -28,9 +28,16 @@ def test_classify_filter_and_runs(monkeypatch):
         _seed(db)
     m.init_ai_intent()  # безтекстовый креатив помечается сразу, без Gemini
     monkeypatch.setattr(m.aii, "classify_batch", lambda items, known, **k: {it["id"]: ("кроссовки" if "кроссов" in (it["title"] or "").lower() else "пенсии и льготы") for it in items})
-    assert m._process_ai_intent_batch() is True
+    # первый шаг — правила раскладывают по таксономии безтекстовый креатив, второй — Gemini (строки = старый формат)
+    for _ in range(3):
+        m._process_ai_intent_batch()
     with closing(m.connect()) as db:
         rows = {r["id"]: r["ai_intent"] for r in db.execute("SELECT id,ai_intent FROM creatives WHERE id>=9000")}
+        tax = {r["id"]: (r["ai_intent_main"], r["ai_intent_sub"]) for r in db.execute("SELECT id,ai_intent_main,ai_intent_sub FROM creatives WHERE id>=9000")}
+    assert tax[9000] == ("Одежда, обувь и аксессуары", "Обувь")
+    assert tax[9001] == ("Госуслуги и общество", "Пенсии и льготы")
+    assert tax[9002] == ("Не определено", "Не определено")
+    with closing(m.connect()) as db:
         assert rows == {9000: "кроссовки", 9001: "пенсии и льготы", 9002: m.aii.UNKNOWN}
         items = [m._creative_row_to_dict(r) for r in db.execute("SELECT * FROM creatives WHERE id=9000")]
         m._attach_intents(db, items)
@@ -82,3 +89,37 @@ def test_ai_intents_scoped_to_job():
     assert scoped["total"] == 3 and scoped["job_id"] == 901
     assert {x["intent"] for x in scoped["items"]} == {"кроссовки", "пенсии и льготы"} and scoped["pending"] == 1
     assert everything["total"] >= scoped["total"]
+
+
+def test_gemini_taxonomy_tuple_validated_and_tree(monkeypatch):
+    """Gemini вернул раздел/подрубрику: верная пара сохраняется как есть, выдуманная — заменяется правилами."""
+    with closing(m.connect()) as db:
+        for i, (t, d) in enumerate([("Юрист по разводу", "раздел имущества"), ("Химчистка пальто", "за 1 день")]):
+            db.execute("INSERT INTO creatives(id,creative_hash,platform,domain,title,description,captured_at) VALUES(?,?,?,?,?,?,?)",
+                       (9200 + i, f"t{i}", "dzen", "x.ru", t, d, "2026-11-23T00:00:00+00:00"))
+            db.execute("INSERT INTO occurrences(job_id,creative_id,platform,observed_at) VALUES(900,?,?,?)", (9200 + i, "dzen", "2026-11-23T00:00:01+00:00"))
+        db.commit()
+    monkeypatch.setattr(m.aii, "classify_batch", lambda items, known, **k: {
+        9200: ("семейные споры", "юристы", "семейные споры"),      # регистр не важен — приводится к таксономии
+        9201: ("химчистка одежды", "Чистка всего", "Пальто"),       # такого раздела нет — правила
+    })
+    for _ in range(3):
+        m._process_ai_intent_batch()
+    with closing(m.connect()) as db:
+        tax = {r["id"]: (r["ai_intent_main"], r["ai_intent_sub"], r["ai_taxonomy_model"])
+               for r in db.execute("SELECT id,ai_intent_main,ai_intent_sub,ai_taxonomy_model FROM creatives WHERE id IN (9200,9201)")}
+    assert tax[9200][:2] == ("Юристы", "Семейные споры") and tax[9200][2] != m.taxonomy.VERSION
+    assert tax[9201] == ("Хозяйство и уборка", "Химчистка одежды", m.taxonomy.VERSION)
+    pr = {"kind": "user", "user_id": 1}
+    tree = m.api_ai_intent_tree(job_id=900, principal=pr)
+    mains = {x["main"]: x for x in tree["items"]}
+    assert mains["Юристы"]["count"] == 1 and mains["Юристы"]["subs"][0]["sub"] == "Семейные споры"
+    assert mains["Юристы"]["subs"][0]["intents"] == [{"intent": "семейные споры", "count": 1}]
+    one = m.api_list_creatives(job_id=900, ai_tree="Юристы", principal=pr)
+    assert [x["id"] for x in one["items"]] == [9200] and one["items"][0]["ai_intent_sub"] == "Семейные споры"
+    both = m.api_list_creatives(job_id=900, ai_tree="Юристы~Хозяйство и уборка>Химчистка одежды", principal=pr)
+    assert sorted(x["id"] for x in both["items"]) == [9200, 9201]
+    assert m.api_list_creatives(job_id=900, ai_tree="Хозяйство и уборка>Уборка", principal=pr)["total"] == 0
+    assert m.api_list_creatives(job_id=900, ai_tree="Юристы>Семейные споры>Семейные споры", principal=pr)["total"] == 1
+    assert m.api_list_creatives(job_id=900, ai_tree="Юристы>Семейные споры>развод", principal=pr)["total"] == 0
+    assert len(m.api_ai_taxonomy(principal=pr)["items"]) == 50
