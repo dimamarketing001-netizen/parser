@@ -199,6 +199,14 @@ SHARE_PAGE_MAX = 4_000_000   # длина data URL одной страницы
 SHARE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
 
+class VideoIn(BaseModel):
+    data_url: str
+    name: str = Field(default="", max_length=200)
+
+
+VIDEO_MAX = 80_000_000
+
+
 class AITranslateIn(BaseModel):
     texts: list[str] = Field(default_factory=list, max_length=300)
     lang: str = Field(min_length=2, max_length=40)
@@ -896,6 +904,38 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         w, h = FORMATS.get(r["format"]) or (1080, 1080)
         return {"name": r["name"], "format": r["format"], "width": w, "height": h,
                 "pages": json.loads(r["pages"]), "updated_at": r["updated_at"]}
+
+    # ------------------------------------------------ видео для слоёв (файлы на диске; ссылка с ключом — для <video src>)
+    video_dir = Path(db_path).parent / "studio_videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    @router.post("/videos")
+    def add_video(p: VideoIn, principal: dict = Depends(principal_dep)):
+        uid(principal)
+        m = re.match(r"^data:video/(mp4|webm|quicktime);base64,(.+)$", p.data_url.strip(), re.S)
+        if not m:
+            raise HTTPException(status_code=422, detail="Нужно видео MP4, WebM или MOV")
+        raw = base64.b64decode(m.group(2))
+        if len(raw) > VIDEO_MAX:
+            raise HTTPException(status_code=413, detail="Видео больше 80 МБ — сократите или сожмите ролик")
+        vid, key = secrets.token_urlsafe(10), secrets.token_urlsafe(18)
+        ext = {"mp4": "mp4", "webm": "webm", "quicktime": "mov"}[m.group(1)]
+        (video_dir / f"{vid}.{key}.{ext}").write_bytes(raw)
+        return {"id": vid, "key": key, "ext": ext, "size": len(raw),
+                "url": f"/api/v1/studio/videos/{vid}.{ext}?k={key}"}
+
+    @router.get("/videos/{name}")
+    def get_video(name: str, k: str = ""):
+        """Без входа, но по ссылке-ключу (тег <video> не умеет отправлять токен)."""
+        m = re.match(r"^([A-Za-z0-9_-]{8,20})\.(mp4|webm|mov)$", name)
+        if not m or not re.match(r"^[A-Za-z0-9_-]{16,40}$", k):
+            raise HTTPException(status_code=404, detail="Видео не найдено")
+        f = video_dir / f"{m.group(1)}.{k}.{m.group(2)}"
+        if not f.exists():
+            raise HTTPException(status_code=404, detail="Видео не найдено")
+        from fastapi.responses import FileResponse
+        return FileResponse(f, media_type={"mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime"}[m.group(2)],
+                            headers={"Cache-Control": "private, max-age=86400"})
 
     @router.get("/uploads")
     def list_uploads(principal: dict = Depends(principal_dep)):
