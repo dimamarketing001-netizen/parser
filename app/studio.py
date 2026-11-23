@@ -37,7 +37,7 @@ from .teams import RANK as TEAM_RANK, init_db as teams_init_db, member_role
 FORMATS = {"square": (1080, 1080), "landscape": (1200, 628), "story": (1080, 1920), "wide": (1080, 607),
            "r43": (1080, 810), "r34": (810, 1080), "r45": (1080, 1350),
            # форматы площадок (ЛК: STUDIO_PLATFORMS) — обложки, превью, карточки маркетплейсов, печать
-           "vk_cover": (1920, 768), "hd": (1280, 720), "yt_banner": (2560, 1440), "mp_card": (900, 1200),
+           "a5": (1748, 2480), "a4p": (2480, 3508), "euro": (1169, 2480), "vk_cover": (1920, 768), "hd": (1280, 720), "yt_banner": (2560, 1440), "mp_card": (900, 1200),
            "og": (1200, 630), "slides": (1920, 1080), "a4": (1240, 1754), "bcard": (1063, 591)}
 ICONS = ["star", "heart", "zap", "flame", "gift", "tag", "badge-percent", "thumbs-up", "sparkles", "trophy",
          "shield-check", "truck", "clock", "phone", "map-pin", "award", "check-circle-2", "rocket"]
