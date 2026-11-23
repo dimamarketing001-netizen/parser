@@ -4770,3 +4770,27 @@ app.include_router(_build_sites_router(public_api_principal, require_user_princi
 from .studio import build_router as _build_studio_router  # noqa: E402
 
 app.include_router(_build_studio_router(public_api_principal, require_user_principal, DATA_DIR))
+
+# Команды ЛК и планировщик публикаций (2026-11-23): app/teams.py, app/planner.py — данные в studio.sqlite3.
+from .teams import build_router as _build_teams_router  # noqa: E402
+
+
+def _teams_users_lookup(ids, email):
+    with closing(connect()) as db:
+        if email:
+            rows = db.execute("SELECT id,email,name FROM users WHERE email=? AND is_active=1", (email,)).fetchall()
+        else:
+            ids = [int(i) for i in (ids or [])][:500]
+            if not ids:
+                return []
+            rows = db.execute(f"SELECT id,email,name FROM users WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
+    return [{"id": r["id"], "email": r["email"], "name": r["name"] or ""} for r in rows]
+
+
+def _teams_notify(user_id, title, text, link):
+    with closing(connect()) as db:
+        create_notification(db, user_id, "team", title, text, link)
+        db.commit()
+
+
+app.include_router(_build_teams_router(public_api_principal, require_user_principal, DATA_DIR, _teams_users_lookup, _teams_notify))
