@@ -207,6 +207,10 @@ class VideoIn(BaseModel):
 VIDEO_MAX = 80_000_000
 
 
+class AudioFetchIn(BaseModel):
+    url: str = Field(min_length=8, max_length=2000)
+
+
 class AITranslateIn(BaseModel):
     texts: list[str] = Field(default_factory=list, max_length=300)
     lang: str = Field(min_length=2, max_length=40)
@@ -912,29 +916,88 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     @router.post("/videos")
     def add_video(p: VideoIn, principal: dict = Depends(principal_dep)):
         uid(principal)
-        m = re.match(r"^data:video/(mp4|webm|quicktime);base64,(.+)$", p.data_url.strip(), re.S)
+        m = re.match(r"^data:((?:video|audio)/(mp4|webm|quicktime|mpeg|mp3|ogg|wav|x-wav|aac|x-m4a));base64,(.+)$", p.data_url.strip(), re.S)
         if not m:
-            raise HTTPException(status_code=422, detail="Нужно видео MP4, WebM или MOV")
-        raw = base64.b64decode(m.group(2))
+            raise HTTPException(status_code=422, detail="Нужно видео (MP4, WebM, MOV) или звук (MP3, M4A, OGG, WAV)")
+        raw = base64.b64decode(m.group(3))
         if len(raw) > VIDEO_MAX:
-            raise HTTPException(status_code=413, detail="Видео больше 80 МБ — сократите или сожмите ролик")
+            raise HTTPException(status_code=413, detail="Файл больше 80 МБ — сократите или сожмите")
+        return save_media(raw, m.group(1))
+
+    MEDIA_EXT = {"video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov", "audio/mpeg": "mp3", "audio/mp3": "mp3",
+                 "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "m4a", "audio/ogg": "ogg", "audio/wav": "wav",
+                 "audio/x-wav": "wav", "audio/webm": "weba"}
+    EXT_MIME = {"mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime", "mp3": "audio/mpeg", "m4a": "audio/mp4",
+                "ogg": "audio/ogg", "wav": "audio/wav", "weba": "audio/webm"}
+
+    def save_media(raw: bytes, mime: str) -> dict:
         vid, key = secrets.token_urlsafe(10), secrets.token_urlsafe(18)
-        ext = {"mp4": "mp4", "webm": "webm", "quicktime": "mov"}[m.group(1)]
+        ext = MEDIA_EXT.get(mime, "mp4")
         (video_dir / f"{vid}.{key}.{ext}").write_bytes(raw)
-        return {"id": vid, "key": key, "ext": ext, "size": len(raw),
-                "url": f"/api/v1/studio/videos/{vid}.{ext}?k={key}"}
+        return {"id": vid, "key": key, "ext": ext, "size": len(raw), "url": f"/api/v1/studio/videos/{vid}.{ext}?k={key}"}
+
+    @router.get("/stock-audio")
+    async def stock_audio(q: str, page: int = 1, principal: dict = Depends(principal_dep)):
+        """Бесплатная музыка и звуки (Openverse: Jamendo, Freesound… — лицензии с коммерческим использованием)."""
+        uid(principal)
+        if len(q.strip()) < 2:
+            return {"results": []}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=10.0), headers={"User-Agent": "ParsYaStudio/1.0"}) as http:
+                r = await http.get("https://api.openverse.org/v1/audio/", params={
+                    "q": q.strip()[:120], "page": max(1, min(page, 10)), "page_size": 20,
+                    "license_type": "commercial,modification", "mature": "false"})
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Сток музыки не отвечает") from exc
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Сток музыки: ошибка {r.status_code}")
+        out = [{"id": x.get("id"), "url": x.get("url"), "title": _txt(x.get("title"), 120), "creator": _txt(x.get("creator"), 80),
+                "duration": round((x.get("duration") or 0) / 1000, 1), "source": x.get("source"),
+                "license": (x.get("license") or "").upper() + (" " + x["license_version"] if x.get("license_version") else ""),
+                "landing": x.get("foreign_landing_url"), "attribution_needed": (x.get("license") or "") not in ("cc0", "pdm")}
+               for x in r.json().get("results") or [] if x.get("url")]
+        return {"results": out}
+
+    @router.post("/stock-audio/fetch")
+    async def stock_audio_fetch(p: AudioFetchIn, principal: dict = Depends(principal_dep)):
+        """Скачать выбранный трек на сервер (браузер не может взять его напрямую из-за CORS)."""
+        uid(principal)
+        u = urlsplit(p.url)
+        if u.scheme not in ("http", "https") or not u.hostname or not await asyncio.to_thread(_public_host, u.hostname):
+            raise HTTPException(status_code=422, detail="Неверная ссылка на трек")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), follow_redirects=True,
+                                         headers={"User-Agent": "ParsYaStudio/1.0"}) as http:
+                async with http.stream("GET", p.url) as r:
+                    if r.status_code >= 400:
+                        raise HTTPException(status_code=502, detail=f"Трек недоступен ({r.status_code})")
+                    if r.url.host and not await asyncio.to_thread(_public_host, r.url.host):
+                        raise HTTPException(status_code=422, detail="Неверная ссылка на трек")
+                    buf = bytearray()
+                    async for chunk in r.aiter_bytes():
+                        buf += chunk
+                        if len(buf) > 25_000_000:
+                            raise HTTPException(status_code=413, detail="Трек больше 25 МБ")
+                    ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Трек не скачался") from exc
+        if not ctype.startswith("audio/"):
+            ctype = "audio/mpeg" if bytes(buf[:3]) == b"ID3" or bytes(buf[:2]) in (b"\xff\xfb", b"\xff\xf3") else ctype
+        if ctype not in MEDIA_EXT:
+            raise HTTPException(status_code=422, detail="Это не аудиофайл")
+        return save_media(bytes(buf), ctype)
 
     @router.get("/videos/{name}")
     def get_video(name: str, k: str = ""):
         """Без входа, но по ссылке-ключу (тег <video> не умеет отправлять токен)."""
-        m = re.match(r"^([A-Za-z0-9_-]{8,20})\.(mp4|webm|mov)$", name)
+        m = re.match(r"^([A-Za-z0-9_-]{8,20})\.(mp4|webm|mov|mp3|m4a|ogg|wav|weba)$", name)
         if not m or not re.match(r"^[A-Za-z0-9_-]{16,40}$", k):
             raise HTTPException(status_code=404, detail="Видео не найдено")
         f = video_dir / f"{m.group(1)}.{k}.{m.group(2)}"
         if not f.exists():
             raise HTTPException(status_code=404, detail="Видео не найдено")
         from fastapi.responses import FileResponse
-        return FileResponse(f, media_type={"mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime"}[m.group(2)],
+        return FileResponse(f, media_type=EXT_MIME[m.group(2)],
                             headers={"Cache-Control": "private, max-age=86400"})
 
     @router.get("/uploads")
