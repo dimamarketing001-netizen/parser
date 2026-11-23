@@ -84,6 +84,10 @@ class PostIn(BaseModel):
     team_id: int | None = None             # только при создании
 
 
+class PostMoveIn(BaseModel):
+    scheduled_at: float
+
+
 class MediaIn(BaseModel):
     data_url: str
     name: str = Field(default="", max_length=200)
@@ -336,11 +340,8 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             wake.set()
         return out
 
-    class MoveIn(BaseModel):
-        scheduled_at: float
-
     @router.patch("/posts/{post_id}/time")
-    def move_post(post_id: int, p: MoveIn, principal: dict = Depends(principal_dep)):
+    def move_post(post_id: int, p: PostMoveIn, principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
         with closing(connect(path)) as c:
             r = access(c, c.execute("SELECT * FROM planner_posts WHERE id=?", (post_id,)).fetchone(), user_id)
