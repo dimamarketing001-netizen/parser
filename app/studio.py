@@ -19,6 +19,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import sqlite3
 import time
@@ -101,6 +102,12 @@ def init_db(path: Path) -> None:
         c.execute("""CREATE TABLE IF NOT EXISTS studio_fonts (
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, family TEXT NOT NULL,
             filename TEXT NOT NULL DEFAULT '', fmt TEXT NOT NULL, data BLOB NOT NULL, created_at REAL NOT NULL)""")
+        # Ссылка на просмотр для клиента: только картинки страниц, отправленные владельцем; токен случайный.
+        c.execute("""CREATE TABLE IF NOT EXISTS studio_shares (
+            token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, design_id INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '',
+            format TEXT NOT NULL DEFAULT 'square', pages TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_studio_share_design ON studio_shares(design_id)")
         cols = {r[1] for r in c.execute("PRAGMA table_info(studio_designs)")}
         if "is_template" not in cols:
             c.execute("ALTER TABLE studio_designs ADD COLUMN is_template INTEGER NOT NULL DEFAULT 0")
@@ -165,6 +172,14 @@ class AICopyIn(BaseModel):
     count: int = Field(default=5, ge=1, le=12)
     tone: str = Field(default="", max_length=200)
     current: dict[str, str] = Field(default_factory=dict)
+
+
+class ShareIn(BaseModel):
+    pages: list[str] = Field(min_length=1, max_length=30)
+
+
+SHARE_PAGE_MAX = 4_000_000   # длина data URL одной страницы
+SHARE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
 
 class AITranslateIn(BaseModel):
@@ -750,6 +765,74 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             r = own(c, design_id, user_id)
         return {**_meta(r), "data": json.loads(r["data"])}
 
+    # ------------------------------------------------ ссылка на просмотр (публичная страница /app/share.html?t=…)
+    def share_meta(r: sqlite3.Row | None) -> dict[str, Any]:
+        if not r:
+            return {"token": None}
+        return {"token": r["token"], "views": r["views"], "pages": len(json.loads(r["pages"])),
+                "created_at": r["created_at"], "updated_at": r["updated_at"]}
+
+    @router.get("/designs/{design_id}/share")
+    def get_share(design_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            own(c, design_id, user_id)
+            r = c.execute("SELECT * FROM studio_shares WHERE design_id=? AND user_id=?", (design_id, user_id)).fetchone()
+        return share_meta(r)
+
+    @router.post("/designs/{design_id}/share")
+    async def put_share(design_id: int, p: ShareIn, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        pages: list[str] = []
+        for u in p.pages:
+            if len(u) > SHARE_PAGE_MAX:
+                raise HTTPException(status_code=413, detail="Страница слишком тяжёлая для ссылки")
+            _mime, b64 = _data_url_parts(u)
+            try:
+                # перекодируем: по ссылке отдаются только настоящие картинки
+                data_url, _w, _h = await asyncio.to_thread(_to_data_url, base64.b64decode(b64), 1600)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=422, detail="Страница не похожа на картинку") from exc
+            pages.append(data_url)
+        now = time.time()
+        with closing(_connect(db_path)) as c:
+            d = own(c, design_id, user_id)
+            old = c.execute("SELECT token FROM studio_shares WHERE design_id=? AND user_id=?", (design_id, user_id)).fetchone()
+            if old:
+                c.execute("UPDATE studio_shares SET pages=?, name=?, format=?, updated_at=? WHERE token=?",
+                          (json.dumps(pages), d["name"], d["format"], now, old["token"]))
+                token = old["token"]
+            else:
+                token = secrets.token_urlsafe(18)
+                c.execute("INSERT INTO studio_shares(token,user_id,design_id,name,format,pages,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                          (token, user_id, design_id, d["name"], d["format"], json.dumps(pages), now, now))
+            c.commit()
+            r = c.execute("SELECT * FROM studio_shares WHERE token=?", (token,)).fetchone()
+        return share_meta(r)
+
+    @router.delete("/designs/{design_id}/share")
+    def delete_share(design_id: int, principal: dict = Depends(principal_dep)):
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            c.execute("DELETE FROM studio_shares WHERE design_id=? AND user_id=?", (design_id, user_id))
+            c.commit()
+        return {"token": None}
+
+    @router.get("/share/{token}")
+    def public_share(token: str):
+        """Без входа: только имя дизайна и картинки страниц, которые владелец сам отправил по ссылке."""
+        if not SHARE_TOKEN_RE.match(token):
+            raise HTTPException(status_code=404, detail="Ссылка не найдена")
+        with closing(_connect(db_path)) as c:
+            r = c.execute("SELECT * FROM studio_shares WHERE token=?", (token,)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail="Ссылка не найдена или отключена")
+            c.execute("UPDATE studio_shares SET views=views+1 WHERE token=?", (token,))
+            c.commit()
+        w, h = FORMATS.get(r["format"]) or (1080, 1080)
+        return {"name": r["name"], "format": r["format"], "width": w, "height": h,
+                "pages": json.loads(r["pages"]), "updated_at": r["updated_at"]}
+
     @router.get("/uploads")
     def list_uploads(principal: dict = Depends(principal_dep)):
         user_id = uid(principal)
@@ -824,6 +907,7 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
             own(c, design_id, user_id)
             c.execute("DELETE FROM studio_designs WHERE id=?", (design_id,))
             c.execute("DELETE FROM studio_versions WHERE design_id=?", (design_id,))
+            c.execute("DELETE FROM studio_shares WHERE design_id=?", (design_id,))
             c.commit()
         return {"ok": True}
 
