@@ -1694,6 +1694,11 @@ class BrowserCommandIn(BaseModel):
 class CollectionCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=500)
+    parent_id: int | None = None  # папка верхнего уровня, внутри которой создать подпапку (PATCH поле игнорирует)
+
+
+class CollectionMoveIn(BaseModel):
+    parent_id: int | None = None  # None — вынести на верхний уровень
 
 
 class CollectionItemIn(BaseModel):
@@ -4794,6 +4799,8 @@ class TopicFolderIn(BaseModel):
     path: str = Field(min_length=1, max_length=400)
     # текущие фильтры библиотеки — папка собирается из тех же объявлений, что видны на экране
     filters: dict[str, Any] = Field(default_factory=dict)
+    # для раздела: отмеченные в фильтре подрубрики — подпапки только для них (пусто — все подрубрики раздела)
+    subs: list[str] = Field(default_factory=list, max_length=300)
 
 
 _TOPIC_FILTER_KEYS = {"inn", "platform", "q", "status", "job_id", "has_advertiser", "has_app", "has_discount",
@@ -4819,7 +4826,10 @@ def api_collection_from_topic(payload: TopicFolderIn, principal: dict = Depends(
     for k in ("has_advertiser", "has_app", "has_discount"):
         if k in flt:
             flt[k] = str(flt[k]).lower() in ("1", "true", "yes")
-    node = f"{main}>{sub}" if sub else main
+    subs = [] if sub else sorted({x.strip() for x in payload.subs if x and x.strip()})
+    if any(x not in pairs[main] for x in subs):
+        raise HTTPException(status_code=422, detail="Такой подрубрики нет в разделе «" + main + "»")
+    node = f"{main}>{sub}" if sub else ("~".join(f"{main}>{x}" for x in subs) if subs else main)
     found: dict[str, tuple[int, str]] = {}  # group_key -> (creative_id, подрубрика)
     offset = 0
     while len(found) < TOPIC_FOLDER_MAX:
@@ -4877,15 +4887,43 @@ def api_collection_from_topic(payload: TopicFolderIn, principal: dict = Depends(
 def api_create_collection(payload: CollectionCreateIn, principal: dict = Depends(public_api_principal)):
     user_id = require_user_principal(principal)
     with closing(connect()) as db:
+        if payload.parent_id is not None:
+            _require_root_folder(db, payload.parent_id, user_id)
         cur = db.execute(
-            "INSERT INTO collections(owner_user_id,name,description,created_at) VALUES(?,?,?,?)",
-            (user_id, payload.name.strip(), payload.description.strip(), now_iso()),
+            "INSERT INTO collections(owner_user_id,name,description,created_at,parent_id) VALUES(?,?,?,?,?)",
+            (user_id, payload.name.strip(), payload.description.strip(), now_iso(), payload.parent_id),
         )
         collection_id = cur.lastrowid
         create_notification(db, user_id, "collection_created", f"Подборка «{payload.name.strip()}» создана",
                              "", "intel-collections")
         db.commit()
     return {"id": collection_id, "name": payload.name.strip()}
+
+
+def _require_root_folder(db, folder_id, user_id):
+    """Подпапки — только в папке верхнего уровня (два уровня: папка → подпапки)."""
+    row = db.execute("SELECT parent_id FROM collections WHERE id=? AND owner_user_id=?", (folder_id, user_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Папка не найдена")
+    if row["parent_id"]:
+        raise HTTPException(status_code=422, detail="Подпапку можно создать только в папке верхнего уровня")
+
+
+@app.post("/api/v1/collections/{collection_id}/move")
+def api_move_collection(collection_id: int, payload: CollectionMoveIn, principal: dict = Depends(public_api_principal)):
+    """Ручная раскладка: положить подборку в папку (стать подпапкой) или вынести на верхний уровень."""
+    user_id = require_user_principal(principal)
+    with closing(connect()) as db:
+        _require_own_collection(db, collection_id, user_id)
+        if payload.parent_id is not None:
+            if payload.parent_id == collection_id:
+                raise HTTPException(status_code=422, detail="Нельзя положить папку саму в себя")
+            _require_root_folder(db, payload.parent_id, user_id)
+            if db.execute("SELECT 1 FROM collections WHERE parent_id=?", (collection_id,)).fetchone():
+                raise HTTPException(status_code=422, detail="В папке есть подпапки — вложить её в другую папку нельзя (только два уровня)")
+        db.execute("UPDATE collections SET parent_id=? WHERE id=?", (payload.parent_id, collection_id))
+        db.commit()
+    return {"ok": True}
 
 
 def _require_own_collection(db, collection_id, user_id):

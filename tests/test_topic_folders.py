@@ -74,3 +74,35 @@ def test_deep_items_include_subfolders():
     deep = m.api_list_collection_items(r["root_id"], deep=1, principal=PR)["items"]
     assert sorted(x["group_key"] for x in deep) == ["fp-a", "fp-b"]
     assert {x["folder_id"] for x in deep} == {f["id"] for f in r["folders"]}
+
+
+def test_manual_subfolder_create_and_move():
+    _seed()
+    root = m.api_create_collection(m.CollectionCreateIn(name="Клиенты"), principal=PR)["id"]
+    sub = m.api_create_collection(m.CollectionCreateIn(name="Иванов", parent_id=root), principal=PR)["id"]
+    lst = {c["id"]: c for c in m.api_list_collections(principal=PR)["items"]}
+    assert lst[sub]["parent_id"] == root and lst[root]["children_count"] == 1
+    with pytest.raises(HTTPException):  # только два уровня
+        m.api_create_collection(m.CollectionCreateIn(name="Глубже", parent_id=sub), principal=PR)
+    other = m.api_create_collection(m.CollectionCreateIn(name="Разное"), principal=PR)["id"]
+    m.api_move_collection(other, m.CollectionMoveIn(parent_id=root), principal=PR)
+    with pytest.raises(HTTPException):  # папку с подпапками в другую папку нельзя
+        m.api_move_collection(root, m.CollectionMoveIn(parent_id=other), principal=PR)
+    with pytest.raises(HTTPException):
+        m.api_move_collection(root, m.CollectionMoveIn(parent_id=root), principal=PR)
+    m.api_move_collection(other, m.CollectionMoveIn(parent_id=None), principal=PR)
+    lst = {c["id"]: c for c in m.api_list_collections(principal=PR)["items"]}
+    assert lst[other]["parent_id"] is None and lst[root]["children_count"] == 1
+
+
+def test_main_topic_with_picked_subs_only_makes_those_subfolders():
+    _seed()
+    with closing(m.connect()) as db:  # чистый лист для этого пользователя
+        db.execute("DELETE FROM collection_items WHERE collection_id IN (SELECT id FROM collections WHERE owner_user_id=77)")
+        db.execute("DELETE FROM collections WHERE owner_user_id=77"); db.commit()
+    r = m.api_collection_from_topic(m.TopicFolderIn(path="Юристы", filters={"job_id": 7700}, subs=["Семейные споры"]), principal=PR)
+    assert [f["name"] for f in r["folders"]] == ["Семейные споры"] and r["found"] == 1
+    names = {c["name"] for c in m.api_list_collections(principal=PR)["items"]}
+    assert "Взыскание долгов" not in names and {"Юристы", "Семейные споры"} <= names
+    with pytest.raises(HTTPException):
+        m.api_collection_from_topic(m.TopicFolderIn(path="Юристы", subs=["Нет такой"]), principal=PR)
