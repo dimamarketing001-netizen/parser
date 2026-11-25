@@ -3525,7 +3525,7 @@ def api_vk_walls_run(principal: dict = Depends(public_api_principal)):
 
 @app.get("/api/v1/advertisers")
 def api_list_advertisers(q: str = "", intent: str = "", limit: int = 25, offset: int = 0, source: str = "",
-                         principal: dict = Depends(public_api_principal)):
+                         ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """source: '' — все; vk — есть реклама в VK; yandex — есть в Яндексе; both — и там, и там."""
     limit, offset = _paging(limit, offset)
     with closing(connect()) as db:
@@ -3550,6 +3550,11 @@ def api_list_advertisers(q: str = "", intent: str = "", limit: int = 25, offset:
                 f"WHERE l2.advertiser_id=a.id AND {_intent_exists_sql('c', intents)})"
             )
             params.extend(intents)
+        tree_sql, tree_params = _ai_tree_where(ai_tree)
+        if tree_sql:
+            where_parts.append("EXISTS (SELECT 1 FROM creative_advertiser_links l3 JOIN creatives c ON c.id=l3.creative_id "
+                               f"WHERE l3.advertiser_id=a.id AND {tree_sql})")
+            params.extend(tree_params)
         where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
         total = db.execute(f"SELECT COUNT(*) FROM advertisers a {where}", params).fetchone()[0]
         rows = db.execute(
@@ -3834,7 +3839,8 @@ def api_list_creatives(
             else:
                 where_parts.append(_intent_exists_sql("c", intents))
                 params.extend(intents)
-        ai_list = [x.strip().lower() for x in (ai_intent or "").split(",") if x.strip()]
+        ai_raw, ai_neg = _neg_value(ai_intent)
+        ai_list = [x.strip().lower() for x in ai_raw.split(",") if x.strip()]
         if ai_list:
             if "__pending__" in ai_list:
                 ai_list = [x for x in ai_list if x != "__pending__"]
@@ -3842,9 +3848,9 @@ def api_list_creatives(
                 if ai_list:
                     ai_sql = f"(c.ai_intent IS NULL OR PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ai_list))}))"
                     params.extend(ai_list)
-                where_parts.append(ai_sql)
+                where_parts.append(_maybe_not(ai_sql, ai_neg))
             else:
-                where_parts.append(f"PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ai_list))})")
+                where_parts.append(_maybe_not(f"PYLOWER(c.ai_intent) IN ({','.join(['?'] * len(ai_list))})", ai_neg))
                 params.extend(ai_list)
         tree_sql, tree_params = _ai_tree_where(ai_tree)
         if tree_sql:
@@ -3868,8 +3874,13 @@ def api_list_creatives(
             "offers": "COALESCE(cd.offers_json,'')<>''", "callouts": "COALESCE(cd.callouts_json,'')<>''",
             "gallery": "cd.ad_format='gallery'", "app": "cd.ad_format='app'", "ad_id": "COALESCE(cd.ad_id,'')<>''",
         }
-        _features = [f for f in (feature or "").split(",") if f.strip() in _feature_sql]
-        if _features:
+        feat_raw, feat_neg = _neg_value(feature)
+        _features = [f for f in feat_raw.split(",") if f.strip() in _feature_sql]
+        if _features and feat_neg:
+            # «кроме»: без пометок из списка (и объявления без разобранной разметки тоже)
+            joins.append("LEFT JOIN creative_details cd ON cd.creative_id=c.id")
+            where_parts.append(_maybe_not("(" + " OR ".join(_feature_sql[f.strip()] for f in _features) + ")", True))
+        elif _features:
             joins.append("JOIN creative_details cd ON cd.creative_id=c.id")
             where_parts.extend(_feature_sql[f.strip()] for f in _features)
         if campaign_id:
@@ -3936,7 +3947,8 @@ def api_list_creatives(
             prefix = {"VK Ads": "vk-native", "Google Ads": "google-ads", "Taboola": "taboola", "Яндекс Дзен": "native-feed",
                       "VK · Реклама от автора": "vk-search", "VK · лента": "vk-feed"}
             ors, has_rsya = [], False
-            for lab in [x.strip() for x in platform_label.split(",") if x.strip()]:
+            pl_raw, pl_neg = _neg_value(platform_label)
+            for lab in [x.strip() for x in pl_raw.split(",") if x.strip()]:
                 if lab in prefix:
                     ors.append("COALESCE(c.detection_method,'') LIKE ?")
                     params.append(prefix[lab] + "%")
@@ -3946,15 +3958,16 @@ def api_list_creatives(
                 ors.append("(" + " AND ".join(["COALESCE(c.detection_method,'') NOT LIKE ?"] * len(prefix)) + ")")
                 params.extend(v + "%" for v in prefix.values())
             if ors:
-                where_parts.append("(" + " OR ".join(ors) + ")")
+                where_parts.append(_maybe_not("(" + " OR ".join(ors) + ")", pl_neg))
         if format:
             video = "(c.creative_type='video' OR COALESCE(c.video_src,'')<>'')"
             fsql = {"video": video, "carousel": f"(NOT {video} AND c.carousel_id IS NOT NULL)",
                     "image": f"(NOT {video} AND c.carousel_id IS NULL AND COALESCE(c.image_url,'')<>'')",
                     "native": f"(NOT {video} AND c.carousel_id IS NULL AND COALESCE(c.image_url,'')='')"}
-            fors = [fsql[x] for x in format.split(",") if x in fsql]
+            fmt_raw, fmt_neg = _neg_value(format)
+            fors = [fsql[x] for x in fmt_raw.split(",") if x in fsql]
             if fors:
-                where_parts.append("(" + " OR ".join(fors) + ")")
+                where_parts.append(_maybe_not("(" + " OR ".join(fors) + ")", fmt_neg))
         for raw, neg in ((ids, False), (exclude_ids, True)):
             if raw:
                 id_list = [int(x) for x in raw.split(",") if x.strip().isdigit()][:2000]
@@ -4069,9 +4082,11 @@ def api_list_platforms(principal: dict = Depends(public_api_principal)):
 
 def _ai_tree_where(ai_tree: str) -> tuple[str, list[Any]]:
     """ai_tree — выбор в дереве фильтра: элементы через «~», уровни через «>» (раздел>подрубрика>интент)
-    («Юристы~Хозяйство и уборка>Химчистка одежды»). Элемент без «>» — весь раздел. Внутри — ИЛИ."""
+    («Юристы~Хозяйство и уборка>Химчистка одежды»). Элемент без «>» — весь раздел. Внутри — ИЛИ.
+    «!» в начале — режим «кроме»: все объявления, кроме выбранных тем (без темы — тоже попадают)."""
+    raw, neg = _neg_value(ai_tree, "~")
     parts, params = [], []
-    for item in (ai_tree or "").split("~"):
+    for item in raw.split("~"):
         main, _, rest = item.partition(">")
         sub, _, intent = rest.partition(">")
         main, sub, intent = main.strip(), sub.strip(), intent.strip().lower()
@@ -4086,7 +4101,28 @@ def _ai_tree_where(ai_tree: str) -> tuple[str, list[Any]]:
         else:
             parts.append("c.ai_intent_main=?")
             params.append(main)
-    return (("(" + " OR ".join(parts) + ")") if parts else ""), params
+    if not parts:
+        return "", []
+    return _maybe_not("(" + " OR ".join(parts) + ")", neg), params
+
+
+def _neg_value(raw: str | None, sep: str = ",") -> tuple[str, bool]:
+    """Фильтр «кроме»: значение фильтра с «!» в начале («!a,b») — исключить перечисленное."""
+    s = (raw or "").strip()
+    if s.startswith("!"):
+        return s[1:].strip().strip(sep), True
+    return s, False
+
+
+def _maybe_not(sql: str, neg: bool) -> str:
+    # IFNULL: у объявления без темы/признака условие даёт NULL — в «кроме» такие объявления должны остаться
+    return f"NOT IFNULL({sql},0)" if neg else sql
+
+
+def _tree_and(ai_tree: str) -> tuple[str, list[Any]]:
+    """« AND (тема)» для отчётов аналитики: фильтр по дереву тем объявлений (алиас creatives — c)."""
+    sql, params = _ai_tree_where(ai_tree)
+    return ((" AND " + sql) if sql else ""), params
 
 
 @app.get("/api/v1/ai-intent-tree")
@@ -5127,13 +5163,15 @@ async def api_ads_proxy(path: str, request: Request, principal: dict = Depends(p
 
 
 @app.get("/api/v1/coverage")
-def api_coverage(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_coverage(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Real per-platform quality stats for the "Источники и качество" screen — no
     placeholder numbers, everything here comes straight from synced creative data."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_where = f"WHERE {_intent_exists_sql('c', intents)}" if intents else ""
-    intent_params = intents
+    tree_sql, tree_params = _ai_tree_where(ai_tree)
+    conds = ([_intent_exists_sql('c', intents)] if intents else []) + ([tree_sql] if tree_sql else [])
+    intent_where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    intent_params = intents + tree_params
     with closing(connect()) as db:
         platform_rows = db.execute(
             "SELECT platform, COUNT(*) total, "
@@ -5153,7 +5191,7 @@ def api_coverage(intent: str = "", principal: dict = Depends(public_api_principa
             "creatives": db.execute(f"SELECT COUNT(*) FROM creatives c {intent_where}", intent_params).fetchone()[0],
             "advertisers": db.execute(
                 (f"SELECT COUNT(DISTINCT l.advertiser_id) FROM creative_advertiser_links l "
-                 f"JOIN creatives c ON c.id=l.creative_id {intent_where}") if intents else
+                 f"JOIN creatives c ON c.id=l.creative_id {intent_where}") if conds else
                 "SELECT COUNT(*) FROM advertisers",
                 intent_params,
             ).fetchone()[0],
@@ -5174,12 +5212,14 @@ def api_coverage(intent: str = "", principal: dict = Depends(public_api_principa
 
 
 @app.get("/api/v1/analytics/cross-platform")
-def api_cross_platform_reuse(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_cross_platform_reuse(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Creatives (grouped by content_fingerprint) seen on more than one platform —
     the clearest signal that a campaign is real and scaled, not a one-off test."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
+    tree_sql, tree_params = _tree_and(ai_tree)
+    intent_sql = (f" AND {_intent_exists_sql('c', intents)}" if intents else "") + tree_sql
+    intents = intents + tree_params
     with closing(connect()) as db:
         rows = db.execute(
             "SELECT c.content_fingerprint, COUNT(DISTINCT o.platform) AS platform_count, "
@@ -5214,7 +5254,8 @@ def api_cross_platform_reuse(intent: str = "", principal: dict = Depends(public_
 
 
 @app.get("/api/v1/analytics/carousels")
-def api_carousels(intent: str = "", creative_id: int = 0, limit: int = 40, principal: dict = Depends(public_api_principal)):
+def api_carousels(intent: str = "", creative_id: int = 0, limit: int = 40, ai_tree: str = "",
+                  principal: dict = Depends(public_api_principal)):
     """Карусели из разных объявлений в том виде, как их показала площадка: порядок слайдов,
     сколько объявлений в карусели всего и сколько было видно сразу, без прокрутки.
     Источник — carousel_slides (состав присылает парсер). creative_id — только карусели с этим объявлением."""
@@ -5229,6 +5270,11 @@ def api_carousels(intent: str = "", creative_id: int = 0, limit: int = 40, princ
     if creative_id:
         where.append("s.carousel_id IN (SELECT carousel_id FROM carousel_slides WHERE creative_id=?)")
         params.append(int(creative_id))
+    tree_sql, tree_params = _ai_tree_where(ai_tree)
+    if tree_sql:  # карусель целиком, если в ней есть объявление выбранной темы
+        where.append("s.carousel_id IN (SELECT ts.carousel_id FROM carousel_slides ts JOIN creatives c ON c.id=ts.creative_id "
+                     f"WHERE {tree_sql})")
+        params += tree_params
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     with closing(connect()) as db:
         groups = db.execute(
@@ -5279,6 +5325,9 @@ def api_carousels(intent: str = "", creative_id: int = 0, limit: int = 40, princ
         if creative_id:
             gwhere.append("g.creative_id=?")
             gparams.append(int(creative_id))
+        if tree_sql:
+            gwhere.append(f"g.creative_id IN (SELECT c.id FROM creatives c WHERE {tree_sql})")
+            gparams += tree_params
         galleries = []
         for g in db.execute(
             "SELECT g.*, j.key_text, j.city FROM creative_galleries g LEFT JOIN jobs j ON j.id=g.job_id"
@@ -5305,7 +5354,7 @@ def api_carousels(intent: str = "", creative_id: int = 0, limit: int = 40, princ
 
 
 @app.get("/api/v1/analytics/ad-signals")
-def api_ad_signals(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_ad_signals(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Что ещё видно в самих объявлениях (разметка, creative_details): промокоды и акции,
     юридические предупреждения, возрастные метки, соцреклама, старые цены, уточнения, товары в плитках,
     форматы — и сколько живёт одно объявление РСЯ (по его номеру data-ad-id)."""
@@ -5316,6 +5365,10 @@ def api_ad_signals(intent: str = "", principal: dict = Depends(public_api_princi
     if intents:
         where.append(_intent_exists_sql("c", intents))
         params.extend(intents)
+    tree_sql, tree_params = _ai_tree_where(ai_tree)
+    if tree_sql:
+        where.append(tree_sql)
+        params.extend(tree_params)
     if not is_admin:
         where.append("c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)")
         params.append(user_id)
@@ -5370,13 +5423,15 @@ def api_ad_signals(intent: str = "", principal: dict = Depends(public_api_princi
 
 
 @app.get("/api/v1/analytics/campaigns")
-def api_campaigns(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_campaigns(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Distinct campaign_id_candidate values (markup-derived, from creative_identifiers)
     with creative counts — each clickable into the library filtered by that campaign
     (same UX as advertiser/job_id filtering). Not gated on advertiser disclosure."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
+    tree_sql, tree_params = _tree_and(ai_tree)
+    intent_sql = (f" AND {_intent_exists_sql('c', intents)}" if intents else "") + tree_sql
+    intents = intents + tree_params
     with closing(connect()) as db:
         rows = db.execute(
             "SELECT ci.identifier_value AS campaign_id, COUNT(DISTINCT ci.creative_id) AS n, "
@@ -5400,13 +5455,15 @@ _UTM_TERM_PLACEHOLDERS = {
 
 
 @app.get("/api/v1/analytics/keywords")
-def api_keywords(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_keywords(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Distinct non-empty utm_term values (from creative_utm, synced regardless of
     advertiser disclosure) with creative counts — "Ключевые слова" tab. Filters out known
     tracking-template placeholder literals rather than counting them as real keywords."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
+    tree_sql, tree_params = _tree_and(ai_tree)
+    intent_sql = (f" AND {_intent_exists_sql('c', intents)}" if intents else "") + tree_sql
+    intents = intents + tree_params
     with closing(connect()) as db:
         rows = db.execute(
             "SELECT cu.utm_term AS keyword, COUNT(DISTINCT cu.creative_id) AS n, "
@@ -5447,7 +5504,7 @@ def _clean_adv_name(name: str | None, inn: str | None) -> str:
 
 
 @app.get("/api/v1/analytics/summary")
-def api_analytics_summary(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_analytics_summary(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Сводка для экрана «Обзор»: о чём реклама, кто рекламируется больше всех, какие объявления
     встречаются чаще и дольше всего, на каких сайтах их показывают и где расходятся данные.
     Одно объявление (общий content_fingerprint) считается один раз. Обычный пользователь видит
@@ -5460,6 +5517,10 @@ def api_analytics_summary(intent: str = "", principal: dict = Depends(public_api
     if intents:
         where.append(_intent_exists_sql("c", intents))
         params.extend(intents)
+    tree_sql, tree_params = _ai_tree_where(ai_tree)
+    if tree_sql:
+        where.append(tree_sql)
+        params.extend(tree_params)
     if not is_admin:
         where.append("c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)")
         params.append(user_id)
@@ -5481,6 +5542,12 @@ def api_analytics_summary(intent: str = "", principal: dict = Depends(public_api
         labelled = db.execute(
             f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w} AND c.ai_intent IS NOT NULL AND PYLOWER(c.ai_intent) NOT IN (?,?)",
             params + unknown).fetchone()[0]
+        # Темы объявлений: раздел → подрубрика (таксономия), сколько разных объявлений в каждой
+        topic_rows = db.execute(
+            f"SELECT c.ai_intent_main AS main, c.ai_intent_sub AS sub, COUNT(DISTINCT {gk}) AS n FROM creatives c "
+            f"WHERE {w} AND COALESCE(c.ai_intent_main,'')<>'' GROUP BY 1,2 ORDER BY n DESC LIMIT 40", params).fetchall()
+        topics_total = db.execute(
+            f"SELECT COUNT(DISTINCT {gk}) FROM creatives c WHERE {w} AND COALESCE(c.ai_intent_main,'')<>''", params).fetchone()[0]
         # Доля объявлений по теме выбранных запросов (если запрос выбран)
         on_topic = None
         if intents:
@@ -5560,6 +5627,9 @@ def api_analytics_summary(intent: str = "", principal: dict = Depends(public_api
         "totals": {"creatives": total, "advertisers": adv_total, "fresh_7d": fresh, "discounts": discounts, "sites": sites_total,
                    "labelled": labelled, "landing_mismatch": landing_mismatch, "legal_mismatch": legal_mismatch},
         "on_topic": on_topic,
+        "topics": [{"main": r["main"], "sub": r["sub"] or "", "count": r["n"],
+                    "pct": round(r["n"] * 100 / topics_total) if topics_total else 0} for r in topic_rows],
+        "topics_total": topics_total,
         "intents": [{"intent": r["intent"], "count": r["n"], "pct": round(r["n"] * 100 / labelled) if labelled else 0,
                      "on_topic": (_pylower(r["intent"]) in match_set) if intents else None} for r in intent_rows],
         "advertisers": [{"inn": r["inn"], "name": _clean_adv_name(r["canonical_name"], r["inn"]), "website_url": r["website_url"],
@@ -5572,7 +5642,8 @@ def api_analytics_summary(intent: str = "", principal: dict = Depends(public_api
 
 
 @app.get("/api/v1/analytics/leaders")
-def api_analytics_leaders(ai_intent: str = "", intent: str = "", limit: int = 24, principal: dict = Depends(public_api_principal)):
+def api_analytics_leaders(ai_intent: str = "", intent: str = "", limit: int = 24, ai_tree: str = "",
+                          principal: dict = Depends(public_api_principal)):
     """Сильные креативы внутри одной темы (интента): объявление тем сильнее, чем на большем числе
     сайтов и в большем числе запусков и городов оно встречается и чем дольше крутится. Такие
     объявления рекламодатель не выключает и масштабирует — значит, они окупаются.
@@ -5587,6 +5658,10 @@ def api_analytics_leaders(ai_intent: str = "", intent: str = "", limit: int = 24
     if intents:
         where.append(_intent_exists_sql("c", intents))
         params.extend(intents)
+    tree_sql, tree_params = _ai_tree_where(ai_tree)
+    if tree_sql:
+        where.append(tree_sql)
+        params.extend(tree_params)
     if not is_admin:
         where.append("c.id IN (SELECT o.creative_id FROM occurrences o JOIN jobs j ON j.id=o.job_id WHERE j.owner_user_id=?)")
         params.append(user_id)
@@ -5665,7 +5740,7 @@ def api_analytics_leaders(ai_intent: str = "", intent: str = "", limit: int = 24
 
 
 @app.get("/api/v1/analytics/daily")
-def api_daily_creatives(days: int = 14, intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_daily_creatives(days: int = 14, intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Сколько новых креативов найдено за каждый из последних дней (по дате первого обнаружения).
     Считает по всей базе, а не по последним загруженным карточкам, как раньше делал фронтенд."""
     require_user_principal(principal)
@@ -5676,6 +5751,9 @@ def api_daily_creatives(days: int = 14, intent: str = "", principal: dict = Depe
     if intents:
         where += " AND " + _intent_exists_sql("c", intents)
         params.extend(intents)
+    tree_sql, tree_params = _tree_and(ai_tree)
+    where += tree_sql
+    params.extend(tree_params)
     with closing(connect()) as db:
         rows = db.execute(
             f"SELECT substr(c.captured_at,1,10) AS day, COUNT(*) AS n FROM creatives c WHERE {where} GROUP BY day", params).fetchall()
@@ -5707,7 +5785,7 @@ def api_coverage(principal: dict = Depends(public_api_principal)):
 
 
 @app.get("/api/v1/analytics/fastest-growing")
-def api_fastest_growing(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_fastest_growing(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Advertisers whose creative count THIS week outpaces the PRIOR week — richer signal
     than the flat "new in 7 days" feed (which only shows *who has any new creative*, not
     who's actually ramping up spend/activity vs their own baseline). From the backlog
@@ -5715,7 +5793,9 @@ def api_fastest_growing(intent: str = "", principal: dict = Depends(public_api_p
     distinct-creative count in [now-7d, now) against [now-14d, now-7d), by captured_at."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
+    tree_sql, tree_params = _tree_and(ai_tree)
+    intent_sql = (f" AND {_intent_exists_sql('c', intents)}" if intents else "") + tree_sql
+    intents = intents + tree_params
     with closing(connect()) as db:
         now = datetime.now(timezone.utc)
         week_start = (now - timedelta(days=7)).replace(microsecond=0).isoformat()
@@ -5748,7 +5828,7 @@ def api_fastest_growing(intent: str = "", principal: dict = Depends(public_api_p
 
 
 @app.get("/api/v1/analytics/landing-mismatch")
-def api_landing_mismatch(intent: str = "", principal: dict = Depends(public_api_principal)):
+def api_landing_mismatch(intent: str = "", ai_tree: str = "", principal: dict = Depends(public_api_principal)):
     """Creatives where the advertiser's OWN declared site domain (from their resolved
     Yandex/VK profile) differs from the domain the ad actually lands on — mirrors MySQL's
     parsya_creative_full.landing_domain_mismatch, but recomputed per-sync in
@@ -5760,7 +5840,9 @@ def api_landing_mismatch(intent: str = "", principal: dict = Depends(public_api_
     something suspicious — this surfaces candidates to look at, not a severity verdict."""
     require_user_principal(principal)
     intents = _parse_intents(intent)
-    intent_sql = f" AND {_intent_exists_sql('c', intents)}" if intents else ""
+    tree_sql, tree_params = _tree_and(ai_tree)
+    intent_sql = (f" AND {_intent_exists_sql('c', intents)}" if intents else "") + tree_sql
+    intents = intents + tree_params
     with closing(connect()) as db:
         rows = db.execute(
             """
