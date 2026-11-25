@@ -14,11 +14,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from typing import Any, Callable
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 SSH_HOST = os.getenv("SITES_SSH_HOST") or os.getenv("ISPMGR_SSH_HOST") or "62.109.6.186"
@@ -58,7 +59,7 @@ class DeployIn(BaseModel):
 
 
 def build_router(principal_dep: Callable, require_user: Callable, addavto_base: str, addavto_user: str,
-                 addavto_password: str) -> APIRouter:
+                 addavto_password: str, addavto_auth: Callable | None = None) -> APIRouter:
     router = APIRouter()
 
     async def addavto(method: str, path: str, payload: dict | None = None) -> Any:
@@ -87,7 +88,7 @@ def build_router(principal_dep: Callable, require_user: Callable, addavto_base: 
 
     async def deploy(d: str, force: bool, template_id: int | None, project_id: int | None,
                      account: int | None = None) -> None:
-        job_note(d, "Направляю A-записи на сервер (reg.ru)…")
+        job_note(d, "Направляю A-записи на сервер (DNS регистратора)…")
         r = await agent("point", d, *(["--force"] if force else []), *(["--account", str(account)] if account else []))
         if not r.get("ok"):
             job_note(d, "Ошибка: " + str(r.get("error")), "error")
@@ -116,17 +117,63 @@ def build_router(principal_dep: Callable, require_user: Callable, addavto_base: 
             await set_status(d, "ssl", str(r.get("error"))[:300])
             await asyncio.sleep(120)
 
+    async def domain_list(refresh: bool = False) -> dict[str, Any]:
+        if refresh or not _list_cache["data"] or time.time() - _list_cache["at"] > 300:
+            r = await agent("list", timeout=240)
+            if not r.get("ok"):
+                raise HTTPException(status_code=502, detail="Список доменов регистраторов: " + str(r.get("error")))
+            _list_cache.update(at=time.time(), data=r)
+        return _list_cache["data"]
+
+    def start_deploy(d: str, force: bool, template_id: int | None, project_id: int | None,
+                     account: int | None) -> dict[str, Any]:
+        j = _jobs.get(d)
+        if j and j.get("state") == "running":
+            return {k: v for k, v in j.items() if not k.startswith("_")}
+        _jobs[d] = {"domain": d, "log": [], "state": "running", "started": time.time()}
+        _jobs[d]["_task"] = asyncio.create_task(deploy(d, force, template_id, project_id, account))
+        _list_cache["at"] = 0
+        return {k: v for k, v in _jobs[d].items() if not k.startswith("_")}
+
+    # ---- addAvto (сервер → сервер, токен PARSYA_ADDAVTO_TOKEN): автозамена на новый домен ----
+    @router.get("/api/addavto/sites/free-domains")
+    async def addavto_free_domains(accounts: str = "", authorization: str | None = Header(default=None)):
+        """Свободные домены выбранных регистраторов (id аккаунтов через запятую):
+        A-запись не на чужом сервере и на домене ещё нет сайта addAvto."""
+        if addavto_auth is None:
+            raise HTTPException(status_code=503, detail="addAvto auth не настроен")
+        addavto_auth(authorization)
+        want = {int(x) for x in re.split(r"[,\s]+", accounts) if x.strip().isdigit()}
+        data = await domain_list()
+        try:
+            ours = {x["domain"] for x in (await addavto("GET", "sites")).get("items") or []}
+        except HTTPException:
+            ours = set()
+        items = [{"domain": it["domain"], "name": it.get("name") or it["domain"], "account": it.get("account"),
+                  "account_login": it.get("account_login"), "expires": it.get("expires")}
+                 for it in data["items"]
+                 if not it.get("occupied") and it["domain"] not in ours and (not want or it.get("account") in want)]
+        return {"items": items, "accounts": data.get("accounts") or []}
+
+    @router.post("/api/addavto/sites/deploy")
+    async def addavto_deploy(payload: DeployIn, authorization: str | None = Header(default=None)):
+        if addavto_auth is None:
+            raise HTTPException(status_code=503, detail="addAvto auth не настроен")
+        addavto_auth(authorization)
+        try:
+            d = payload.domain.strip().lower().removeprefix("www.").encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise HTTPException(status_code=422, detail="Неверный домен") from exc
+        await set_status(d, "dns", "Размещение начато (автозамена)", template_id=payload.template_id,
+                         project_id=payload.project_id)
+        return start_deploy(d, payload.force, payload.template_id, payload.project_id, payload.account)
+
     @router.get("/api/v1/sites/domains")
     async def domains(refresh: bool = False, principal: dict = Depends(principal_dep)):
         """Домены reg.ru: занят (A на чужой IP) / свободен / наш сервер, +
         сайт addAvto, если уже заведён."""
         require_user(principal)
-        if refresh or not _list_cache["data"] or time.time() - _list_cache["at"] > 300:
-            r = await agent("list", timeout=240)
-            if not r.get("ok"):
-                raise HTTPException(status_code=502, detail="Список доменов reg.ru: " + str(r.get("error")))
-            _list_cache.update(at=time.time(), data=r)
-        data = _list_cache["data"]
+        data = await domain_list(refresh)
         try:
             ours = {s["domain"]: s for s in (await addavto("GET", "sites")).get("items") or []}
         except HTTPException:
@@ -161,13 +208,9 @@ def build_router(principal_dep: Callable, require_user: Callable, addavto_base: 
             raise HTTPException(status_code=422, detail="Неверный домен") from exc
         j = _jobs.get(d)
         if j and j.get("state") == "running":
-            return j
-        _jobs[d] = {"domain": d, "log": [], "state": "running", "started": time.time()}
+            return {k: v for k, v in j.items() if not k.startswith("_")}
         await set_status(d, "dns", "Размещение начато", template_id=payload.template_id, project_id=payload.project_id)
-        task = asyncio.create_task(deploy(d, payload.force, payload.template_id, payload.project_id, payload.account))
-        _jobs[d]["_task"] = task
-        _list_cache["at"] = 0
-        return {k: v for k, v in _jobs[d].items() if not k.startswith("_")}
+        return start_deploy(d, payload.force, payload.template_id, payload.project_id, payload.account)
 
     @router.get("/api/v1/sites/deploy-status")
     async def deploy_status(principal: dict = Depends(principal_dep)):
