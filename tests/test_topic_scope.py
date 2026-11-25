@@ -50,6 +50,9 @@ def test_other_filters_exclude():
     assert ids(ai_intent="!развод") == [7802, 7803, 7804]
     assert ids(format="video") == [7801]
     assert 7801 not in ids(format="!video")
+    # ключевое слово запуска: «кроме» убирает объявления, найденные по этому запросу
+    assert ids(intent="юрист") == [7801, 7802, 7803, 7804]
+    assert ids(intent="!юрист") == []
 
 
 def test_analytics_respect_topic():

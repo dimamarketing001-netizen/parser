@@ -3829,15 +3829,16 @@ def api_list_creatives(
         joins = []
         where_parts = []
         params: list[Any] = []
-        intents = _parse_intents(intent)
+        intent_raw, intent_neg = _neg_value(intent)  # «!» — все объявления, кроме найденных по этим запросам
+        intents = _parse_intents(intent_raw)
         if intents:
             combined = _semantic_intent_where(db, intents)
             if combined:
                 where_sql, extra_params = combined
-                where_parts.append(where_sql)
+                where_parts.append(_maybe_not(f"({where_sql})", intent_neg))
                 params.extend(extra_params)
             else:
-                where_parts.append(_intent_exists_sql("c", intents))
+                where_parts.append(_maybe_not(_intent_exists_sql("c", intents), intent_neg))
                 params.extend(intents)
         ai_raw, ai_neg = _neg_value(ai_intent)
         ai_list = [x.strip().lower() for x in ai_raw.split(",") if x.strip()]
