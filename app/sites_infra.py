@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 SSH_HOST = os.getenv("SITES_SSH_HOST") or os.getenv("ISPMGR_SSH_HOST") or "62.109.6.186"
 SSH_USER = os.getenv("SITES_SSH_USER") or os.getenv("ISPMGR_SSH_USER") or "dima"
 AGENT = "cd ~/regru_monitor && .venv/bin/python3 sites_agent.py"
-SSL_WAIT_MINUTES = int(os.getenv("SITES_SSL_WAIT_MINUTES", "45"))
+SSL_WAIT_MINUTES = int(os.getenv("SITES_SSL_WAIT_MINUTES", "120"))  # wildcard *.зона: первый выпуск ждёт DNS reg.ru
 
 _list_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _jobs: dict[str, dict[str, Any]] = {}
