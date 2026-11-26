@@ -228,6 +228,22 @@ class VideoIn(BaseModel):
     name: str = Field(default="", max_length=200)
 
 
+class VectorIn(BaseModel):
+    svg: str = Field(min_length=20, max_length=40_000_000)
+    name: str = Field(default="", max_length=200)
+
+
+# SVG из «Фото → SVG» хранится файлом и вставляется в дизайн ссылкой. Отдаётся с того же домена, поэтому
+# принимаем только «чистую» графику: без скриптов, обработчиков, внешних ссылок, foreignObject и DTD.
+_SVG_BAD = re.compile(r"<\s*(script|foreignObject|iframe|embed|object|image|use|a|animate|set|style)\b|\bon[a-z]+\s*=|javascript:|<!ENTITY|<!DOCTYPE|"
+                      r"(?:xlink:)?href\s*=\s*[\"'](?!#)|url\(\s*[\"']?(?!#)", re.I)
+
+
+def svg_is_clean(svg: str) -> bool:
+    head = svg.lstrip()[:200].lower()
+    return (head.startswith("<svg") or head.startswith("<?xml")) and not _SVG_BAD.search(svg)
+
+
 VIDEO_MAX = 80_000_000
 
 
@@ -1047,15 +1063,22 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
 
     MEDIA_EXT = {"video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov", "audio/mpeg": "mp3", "audio/mp3": "mp3",
                  "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "m4a", "audio/ogg": "ogg", "audio/wav": "wav",
-                 "audio/x-wav": "wav", "audio/webm": "weba"}
+                 "audio/x-wav": "wav", "audio/webm": "weba", "image/svg+xml": "svg"}
     EXT_MIME = {"mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime", "mp3": "audio/mpeg", "m4a": "audio/mp4",
-                "ogg": "audio/ogg", "wav": "audio/wav", "weba": "audio/webm"}
+                "ogg": "audio/ogg", "wav": "audio/wav", "weba": "audio/webm", "svg": "image/svg+xml"}
 
     def save_media(raw: bytes, mime: str) -> dict:
         vid, key = secrets.token_urlsafe(10), secrets.token_urlsafe(18)
         ext = MEDIA_EXT.get(mime, "mp4")
         (video_dir / f"{vid}.{key}.{ext}").write_bytes(raw)
         return {"id": vid, "key": key, "ext": ext, "size": len(raw), "url": f"/api/v1/studio/videos/{vid}.{ext}?k={key}"}
+
+    @router.post("/vectors")
+    def add_vector(p: VectorIn, principal: dict = Depends(principal_dep)):
+        uid(principal)
+        if not svg_is_clean(p.svg):
+            raise HTTPException(status_code=422, detail="Нужен SVG без скриптов и внешних ссылок")
+        return save_media(p.svg.encode("utf-8"), "image/svg+xml")
 
     @router.get("/stock-audio")
     async def stock_audio(q: str, page: int = 1, principal: dict = Depends(principal_dep)):
@@ -1111,15 +1134,17 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
     @router.get("/videos/{name}")
     def get_video(name: str, k: str = ""):
         """Без входа, но по ссылке-ключу (тег <video> не умеет отправлять токен)."""
-        m = re.match(r"^([A-Za-z0-9_-]{8,20})\.(mp4|webm|mov|mp3|m4a|ogg|wav|weba)$", name)
+        m = re.match(r"^([A-Za-z0-9_-]{8,20})\.(mp4|webm|mov|mp3|m4a|ogg|wav|weba|svg)$", name)
         if not m or not re.match(r"^[A-Za-z0-9_-]{16,40}$", k):
             raise HTTPException(status_code=404, detail="Видео не найдено")
         f = video_dir / f"{m.group(1)}.{k}.{m.group(2)}"
         if not f.exists():
             raise HTTPException(status_code=404, detail="Видео не найдено")
         from fastapi.responses import FileResponse
-        return FileResponse(f, media_type=EXT_MIME[m.group(2)],
-                            headers={"Cache-Control": "private, max-age=86400"})
+        hdr = {"Cache-Control": "private, max-age=86400"}
+        if m.group(2) == "svg":  # открытый напрямую SVG ничего не выполнит
+            hdr.update({"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox", "X-Content-Type-Options": "nosniff"})
+        return FileResponse(f, media_type=EXT_MIME[m.group(2)], headers=hdr)
 
     @router.get("/uploads")
     def list_uploads(principal: dict = Depends(principal_dep)):
