@@ -113,6 +113,12 @@ def test_fetch_image_blocks_private_hosts():
         assert client.post("/api/v1/studio/fetch-image", json={"url": url}, headers=a).status_code == 422
 
 
+
+def test_fetch_feed_blocks_private_hosts():
+    a = _user("studio-fetch@example.com")
+    for url in ("http://127.0.0.1/x.png", "http://localhost:8091/health", "ftp://example.com/a.png"):
+        assert client.post("/api/v1/studio/fetch-feed", json={"url": url}, headers=a).status_code == 422
+
 def test_to_data_url_resizes():
     from PIL import Image
     buf = io.BytesIO()

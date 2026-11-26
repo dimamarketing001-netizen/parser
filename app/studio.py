@@ -187,6 +187,10 @@ class FetchImageIn(BaseModel):
     max_dim: int = Field(default=1600, ge=200, le=4000)
 
 
+class FetchFeedIn(BaseModel):
+    url: str = Field(min_length=8, max_length=4000)
+
+
 class AICopyIn(BaseModel):
     brief: str = Field(default="", max_length=3000)
     fields: list[str] = Field(default_factory=lambda: ["headline", "subheadline", "cta", "badge"], max_length=6)
@@ -1187,6 +1191,49 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         except Exception as exc:  # noqa: BLE001 - Pillow: не картинка/битый файл
             raise HTTPException(status_code=422, detail="По ссылке не картинка или файл повреждён") from exc
         return {"data_url": data_url, "width": w, "height": h}
+
+    @router.post("/fetch-feed")
+    async def fetch_feed(p: FetchFeedIn, principal: dict = Depends(principal_dep)):
+        """Товарный фид (YML/XML/CSV) по ссылке → текст: браузер не может читать чужие фиды из-за CORS.
+        Те же проверки адреса, что у fetch-image (только публичные http(s)-хосты), не больше 15 МБ."""
+        uid(principal)
+        url = p.url.strip()
+        u = urlsplit(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            raise HTTPException(status_code=422, detail="Нужна ссылка http(s)")
+        if not await asyncio.to_thread(_public_host, u.hostname):
+            raise HTTPException(status_code=422, detail="Адрес недоступен")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), follow_redirects=True,
+                                         headers={"User-Agent": "Mozilla/5.0 ParsYaStudio"}) as http:
+                async with http.stream("GET", url) as r:
+                    if r.status_code >= 400:
+                        raise HTTPException(status_code=422, detail=f"Фид не скачался: HTTP {r.status_code}")
+                    if not await asyncio.to_thread(_public_host, r.url.host or ""):
+                        raise HTTPException(status_code=422, detail="Адрес недоступен")
+                    buf = bytearray()
+                    async for chunk in r.aiter_bytes():
+                        buf += chunk
+                        if len(buf) > 15 * 1024 * 1024:
+                            raise HTTPException(status_code=413, detail="Фид больше 15 МБ — загрузите файл или ссылку на часть")
+                    ctype = r.headers.get("content-type", "")
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=422, detail=f"Фид не скачался: {exc.__class__.__name__}") from exc
+        raw = bytes(buf)
+        enc = "utf-8"
+        m = re.search(rb'encoding=["\']([A-Za-z0-9_-]+)', raw[:200])
+        if m:
+            enc = m.group(1).decode("ascii", "ignore") or "utf-8"
+        elif "charset=" in ctype:
+            enc = ctype.split("charset=", 1)[1].split(";")[0].strip() or "utf-8"
+        try:
+            text = raw.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("cp1251", "replace")
+        return {"text": text, "content_type": ctype, "bytes": len(raw)}
 
     @router.post("/remove-bg")
     async def remove_bg(p: RemoveBgIn, principal: dict = Depends(principal_dep)):
