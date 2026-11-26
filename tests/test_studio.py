@@ -288,3 +288,12 @@ def test_notify_only_team_members():
     assert client.post(f"/api/v1/studio/designs/{d['id']}/notify", json={"kind": "spam"}, headers=a).status_code == 422
     # без доступа к дизайну — нельзя
     assert client.post(f"/api/v1/studio/designs/{d['id']}/notify", json={"kind": "review"}, headers=b).status_code in (403, 404)
+
+
+def test_presence_lists_peers():
+    a = _user("studio-pres-a@example.com")
+    d = client.post("/api/v1/studio/designs", json=_design("Вместе"), headers=a).json()
+    r = client.post(f"/api/v1/studio/designs/{d['id']}/presence", json={"page": 0, "x": 10, "y": 20, "sel": ["L1"]}, headers=a).json()
+    assert r["peers"] == [] and r["updated_at"] and r["me"]
+    b = _user("studio-pres-b@example.com")
+    assert client.post(f"/api/v1/studio/designs/{d['id']}/presence", json={}, headers=b).status_code in (403, 404)

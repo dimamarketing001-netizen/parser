@@ -194,6 +194,15 @@ class NotifyIn(BaseModel):
     text: str = Field(default="", max_length=300)
 
 
+class PresenceIn(BaseModel):
+    """Совместная работа: где курсор (в % холста), что выделено, какая страница."""
+    page: int = Field(default=0, ge=0, le=500)
+    x: float | None = Field(default=None, ge=-50, le=150)
+    y: float | None = Field(default=None, ge=-50, le=150)
+    sel: list[str] = Field(default_factory=list, max_length=50)
+    editing: bool = False
+
+
 class FetchFeedIn(BaseModel):
     url: str = Field(min_length=8, max_length=4000)
 
@@ -967,6 +976,27 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         who = p.name.strip() or "Клиент"
         _notify_user(r["user_id"], f"Комментарий к «{r['name']}»", f"{who}: {p.text.strip()[:140]}", "studio-library")
         return {"id": cur.lastrowid, "created_at": now}
+
+    presence: dict[int, dict[int, dict[str, Any]]] = {}
+
+    @router.post("/designs/{design_id}/presence")
+    def design_presence(design_id: int, p: PresenceIn, principal: dict = Depends(principal_dep)):
+        """Кто сейчас в дизайне (в памяти процесса, живёт 12 с) + отметка последнего сохранения —
+        клиент опрашивает раз в ~2 с, рисует курсоры/выделение соавторов и подтягивает чужие правки."""
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            r = own(c, design_id, user_id, "viewer")
+        now = time.time()
+        room = presence.setdefault(design_id, {})
+        room[user_id] = {"user_id": user_id, "email": str(principal.get("email") or ""), "page": p.page, "x": p.x, "y": p.y,
+                         "sel": [str(x)[:40] for x in p.sel][:50], "editing": p.editing, "ts": now}
+        for k in [k for k, v in room.items() if now - v["ts"] > 12]:
+            room.pop(k, None)
+        if len(presence) > 2000:
+            for did in [d for d, rm in presence.items() if not rm]:
+                presence.pop(did, None)
+        peers = [{**v, "age": round(now - v["ts"], 1)} for k, v in room.items() if k != user_id]
+        return {"me": user_id, "peers": peers, "updated_at": r["updated_at"], "updated_by": r["updated_by"]}
 
     @router.post("/designs/{design_id}/notify")
     def notify_design(design_id: int, p: NotifyIn, principal: dict = Depends(principal_dep)):
