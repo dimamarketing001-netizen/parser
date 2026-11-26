@@ -187,6 +187,13 @@ class FetchImageIn(BaseModel):
     max_dim: int = Field(default=1600, ge=200, le=4000)
 
 
+class NotifyIn(BaseModel):
+    """Упоминание @ в заметке или смена статуса согласования — уведомить участников команды дизайна."""
+    kind: str = Field(pattern="^(mention|review|changes|approved)$")
+    user_ids: list[int] = Field(default_factory=list, max_length=20)
+    text: str = Field(default="", max_length=300)
+
+
 class FetchFeedIn(BaseModel):
     url: str = Field(min_length=8, max_length=4000)
 
@@ -227,12 +234,12 @@ class ShareCommentIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
 
 
-def _notify_user(user_id: int, title: str, text: str, link: str) -> None:
+def _notify_user(user_id: int, title: str, text: str, link: str, type_: str = "studio_comment") -> None:
     """Уведомление в ЛК через основной модуль (ленивый импорт — без правок main.py)."""
     try:
         from . import main as M  # noqa: PLC0415
         with closing(M.connect()) as db:
-            M.create_notification(db, user_id, "studio_comment", title, text, link)
+            M.create_notification(db, user_id, type_, title, text, link)
             db.commit()
     except Exception as exc:  # noqa: BLE001
         print(f"[studio] уведомление не отправлено: {exc}", flush=True)
@@ -960,6 +967,29 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         who = p.name.strip() or "Клиент"
         _notify_user(r["user_id"], f"Комментарий к «{r['name']}»", f"{who}: {p.text.strip()[:140]}", "studio-library")
         return {"id": cur.lastrowid, "created_at": now}
+
+    @router.post("/designs/{design_id}/notify")
+    def notify_design(design_id: int, p: NotifyIn, principal: dict = Depends(principal_dep)):
+        """Уведомить автора и участников команды дизайна (только их — не произвольных пользователей).
+        Для «на согласовании» без списка — всем владельцам/админам команды (или автору)."""
+        user_id = uid(principal)
+        with closing(_connect(db_path)) as c:
+            r = own(c, design_id, user_id, "viewer")
+            allowed = {int(r["user_id"])}
+            roles = {}
+            if r["team_id"]:
+                for m in c.execute("SELECT user_id, role FROM team_members WHERE team_id=?", (r["team_id"],)):
+                    allowed.add(int(m["user_id"]))
+                    roles[int(m["user_id"])] = m["role"]
+        targets = [u for u in dict.fromkeys(p.user_ids) if u in allowed and u != user_id]
+        if p.kind == "review" and not targets:
+            targets = [u for u, ro in roles.items() if ro in ("owner", "admin") and u != user_id] or ([int(r["user_id"])] if int(r["user_id"]) != user_id else [])
+        who = str(principal.get("email") or "Коллега")
+        title = {"mention": f"Вас упомянули в «{r['name']}»", "review": f"На согласование: «{r['name']}»",
+                 "changes": f"Нужны правки: «{r['name']}»", "approved": f"Утверждено: «{r['name']}»"}[p.kind]
+        for t in targets:
+            _notify_user(t, title, f"{who}: {p.text.strip()[:200]}" if p.text.strip() else who, "studio-library", "studio_review" if p.kind != "mention" else "studio_mention")
+        return {"sent": len(targets)}
 
     @router.get("/designs/{design_id}/comments")
     def design_comments(design_id: int, principal: dict = Depends(principal_dep)):

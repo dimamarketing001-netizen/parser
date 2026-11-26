@@ -276,3 +276,15 @@ def test_remove_bg_endpoint(monkeypatch):
     du = "data:image/jpeg;base64," + base64.b64encode(_png_bytes()).decode()
     r = client.post("/api/v1/studio/remove-bg", json={"image": du}, headers=a).json()
     assert r["data_url"].startswith("data:image/png;base64,") and r["width"] == 600
+
+
+def test_notify_only_team_members():
+    a = _user("studio-notify-a@example.com")
+    b = _user("studio-notify-b@example.com")
+    d = client.post("/api/v1/studio/designs", json=_design("Уведомления"), headers=a).json()
+    # чужой пользователь не входит в команду дизайна — уведомление не уходит
+    r = client.post(f"/api/v1/studio/designs/{d['id']}/notify", json={"kind": "mention", "user_ids": [999999], "text": "@кто-то"}, headers=a)
+    assert r.status_code == 200 and r.json()["sent"] == 0
+    assert client.post(f"/api/v1/studio/designs/{d['id']}/notify", json={"kind": "spam"}, headers=a).status_code == 422
+    # без доступа к дизайну — нельзя
+    assert client.post(f"/api/v1/studio/designs/{d['id']}/notify", json={"kind": "review"}, headers=b).status_code in (403, 404)
