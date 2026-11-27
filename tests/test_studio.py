@@ -297,3 +297,20 @@ def test_presence_lists_peers():
     assert r["peers"] == [] and r["updated_at"] and r["me"]
     b = _user("studio-pres-b@example.com")
     assert client.post(f"/api/v1/studio/designs/{d['id']}/presence", json={}, headers=b).status_code in (403, 404)
+
+
+def test_face_points_clean():
+    from app.studio import face_points_clean
+    raw = {"people": [
+        {"head_box": [100, 50, 300, 300], "yaw": 0.2, "pose": "portrait",
+         "face": {"eye_l": [150, 150], "eye_r": [250, 150], "eye_l_box": [130, 140, 170, 160], "chin": [200, 290],
+                  "mouth": "teeth", "nose_tip": ["x", 1], "jaw_l": [5000, -3]}},
+        {"face": {"eye_l": [1, 1]}},           # нет второго глаза — отбросить
+        "junk"]}
+    out = face_points_clean(raw, 400, 400)
+    assert len(out["people"]) == 1
+    p = out["people"][0]
+    assert p["eye_l"] == [0.375, 0.375] and p["eye_l_box"] == [0.325, 0.35, 0.425, 0.4]
+    assert p["mouth"] == "teeth" and p["pose"] == "portrait" and p["yaw"] == 0.2
+    assert "nose_tip" not in p and p["jaw_l"] == [1.0, 0.0]
+    assert face_points_clean("oops", 10, 10) == {"people": []}

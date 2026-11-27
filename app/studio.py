@@ -283,6 +283,10 @@ class AIDesignIn(BaseModel):
     has_photo: bool = False
 
 
+class FacePointsIn(BaseModel):
+    image: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
+
+
 class AICritiqueIn(BaseModel):
     image: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
     brief: str = Field(default="", max_length=2000)
@@ -477,6 +481,58 @@ COPY_FIELDS = {"headline": "заголовок на картинке (до 40 с
                "cta": "текст кнопки (до 18 символов, глагол: «Узнать цену», «Записаться»)",
                "badge": "плашка-акцент (до 14 символов: «-30%», «Бесплатно», «Новинка»)",
                "disclaimer": "мелкий текст-оговорка (до 90 символов)"}
+
+FACE_POINTS_SYSTEM = """You locate facial keypoints on a photo for a cartoon-character drawing tool. Coordinates are integer PIXELS of the given image: x from the left edge (0..width-1), y from the top edge (0..height-1).
+Be as precise as you can: place each point exactly on the anatomical spot. List every clearly visible human face (max 6), largest first. No faces — {"people":[]}.
+Answer with JSON only:
+{"people":[{
+ "head_box":[x1,y1,x2,y2],
+ "face":{
+  "eye_l":[x,y], "eye_r":[x,y],
+  "eye_l_box":[x1,y1,x2,y2], "eye_r_box":[x1,y1,x2,y2],
+  "brow_l":[x,y], "brow_r":[x,y],
+  "nose_tip":[x,y],
+  "mouth_l":[x,y], "mouth_r":[x,y], "lip_top":[x,y], "lip_bot":[x,y],
+  "chin":[x,y], "jaw_l":[x,y], "jaw_r":[x,y], "cheek_l":[x,y], "cheek_r":[x,y],
+  "mouth":"closed|smile|teeth|open"
+ },
+ "yaw":-1..1, "pose":"portrait|standing|sitting|lying|other"
+}]}
+eye_l/eye_r are pupil centres (_l = the eye on the IMAGE left), *_box — tight box of the visible eye opening, brow_* — middle of each eyebrow, jaw_* — jaw angle below the ears, cheek_* — widest face points at cheekbone level. mouth: smile = closed-lip smile, teeth = smile showing teeth, open = mouth open. yaw: 0 = frontal, ±1 = full profile."""
+
+FACE_KEYS = ("eye_l", "eye_r", "brow_l", "brow_r", "nose_tip", "mouth_l", "mouth_r", "lip_top", "lip_bot", "chin", "jaw_l", "jaw_r", "cheek_l", "cheek_r")
+FACE_BOXES = ("eye_l_box", "eye_r_box")
+
+
+def face_points_clean(raw: Any, w: int, h: int) -> dict:
+    """Ответ ИИ → точки в долях картинки 0..1; всё непонятное отбрасывается."""
+    def pt(v: Any, n: int) -> list[float] | None:
+        if not isinstance(v, list) or len(v) != n or not all(isinstance(x, (int, float)) for x in v):
+            return None
+        return [round(min(1.0, max(0.0, float(x) / (w if i % 2 == 0 else h))), 4) for i, x in enumerate(v)]
+    people = []
+    for p in (raw.get("people") if isinstance(raw, dict) else None) or []:
+        if not isinstance(p, dict) or not isinstance(p.get("face"), dict):
+            continue
+        f = p["face"]
+        out: dict[str, Any] = {k: pt(f.get(k), 2) for k in FACE_KEYS}
+        out.update({k: pt(f.get(k), 4) for k in FACE_BOXES})
+        out = {k: v for k, v in out.items() if v}
+        if "eye_l" not in out or "eye_r" not in out:
+            continue
+        if f.get("mouth") in ("closed", "smile", "teeth", "open"):
+            out["mouth"] = f["mouth"]
+        out["yaw"] = _num(p.get("yaw"), -1, 1, 0)
+        if p.get("pose") in ("portrait", "standing", "sitting", "lying", "other"):
+            out["pose"] = p["pose"]
+        hb = pt(p.get("head_box"), 4)
+        if hb:
+            out["head_box"] = hb
+        people.append(out)
+        if len(people) >= 6:
+            break
+    return {"people": people}
+
 
 CRITIQUE_SYSTEM = """Ты — опытный арт-директор и модератор рекламы Яндекс Директа. Оцени рекламную
 картинку строго и по делу. Отвечай ТОЛЬКО JSON:
@@ -1450,6 +1506,25 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         if not designs:
             raise HTTPException(status_code=502, detail="ИИ не собрал макет — попробуйте ещё раз или уточните бриф")
         return {"designs": designs[:p.count]}
+
+    @router.post("/ai/face-points")
+    async def ai_face_points(p: FacePointsIn, principal: dict = Depends(principal_dep)):
+        """Точки лица для «Персонажа по фото»: глаза, брови, нос, рот, подбородок, поворот головы (доли 0..1)."""
+        uid(principal)
+        _mime, b64 = _data_url_parts(p.image)
+        if len(b64) * 3 // 4 > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Картинка слишком большая")
+        data_url, w, h = await asyncio.to_thread(_to_data_url, base64.b64decode(b64), 1024)
+        mime, small = _data_url_parts(data_url)
+        content = [{"type": "image", "source": {"type": "base64", "media_type": mime, "data": small}},
+                   {"type": "text", "text": f"Image size {w}x{h}. Return the JSON."}]
+        try:
+            raw = parse_json(await ai_complete(FACE_POINTS_SYSTEM, content, 4000))
+        except AIError as exc:
+            raise ai_fail(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="ИИ ответил не по формату") from exc
+        return face_points_clean(raw, w, h)
 
     @router.post("/ai/critique")
     async def ai_critique(p: AICritiqueIn, principal: dict = Depends(principal_dep)):
