@@ -287,6 +287,12 @@ class FacePointsIn(BaseModel):
     image: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
 
 
+class CharacterIn(BaseModel):
+    image: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
+    style: str = Field(default="anime", max_length=20)
+    variants: int = Field(default=2, ge=1, le=4)
+
+
 class AICritiqueIn(BaseModel):
     image: str = Field(min_length=50, max_length=MAX_IMAGE_BYTES * 2)
     brief: str = Field(default="", max_length=2000)
@@ -502,6 +508,23 @@ eye_l/eye_r are pupil centres (_l = the eye on the IMAGE left), *_box — tight 
 
 FACE_KEYS = ("eye_l", "eye_r", "brow_l", "brow_r", "nose_tip", "mouth_l", "mouth_r", "lip_top", "lip_bot", "chin", "jaw_l", "jaw_r", "cheek_l", "cheek_r")
 FACE_BOXES = ("eye_l_box", "eye_r_box")
+
+
+CHAR_DESC_SYSTEM = """You describe a photo for an image-to-image cartoon generator. Reply ONLY with JSON: {"desc": "..."}.
+desc: one English line, max 55 words, comma-separated tags, in this order: number of people (if more than one);
+for the main person: apparent gender and age group, skin tone (e.g. fair, olive, brown, dark brown), hair color and style
+(or bald), eye color if visible, facial hair, glasses ONLY if actually worn, facial expression (smiling / closed mouth / open mouth);
+then clothing with colors, notable accessories, pose or action, and the setting in 2-4 words; add "black and white" if the photo is monochrome.
+Never name or guess who the person is. No quality words, no style words."""
+CHAR_STYLES = ("anime", "pixar", "comic", "toon")
+
+
+def char_desc_clean(raw: Any) -> str:
+    d = raw.get("desc") if isinstance(raw, dict) else None
+    if not isinstance(d, str):
+        return ""
+    d = re.sub(r"[^\w\s,.'()-]", " ", d)
+    return re.sub(r"\s+", " ", d).strip()[:400]
 
 
 def face_points_clean(raw: Any, w: int, h: int) -> dict:
@@ -1525,6 +1548,67 @@ def build_router(principal_dep: Callable, require_user: Callable, data_dir: Path
         except ValueError as exc:
             raise HTTPException(status_code=502, detail="ИИ ответил не по формату") from exc
         return face_points_clean(raw, w, h)
+
+    char_jobs: dict[str, int] = {}  # id задания генерации → владелец
+
+    def _sd() -> tuple[str, dict]:
+        url = (os.getenv("STUDIO_SD_URL") or "http://127.0.0.1:8092").rstrip("/")
+        tok = os.getenv("STUDIO_SD_TOKEN") or ""
+        return url, ({"X-SD-Token": tok} if tok else {})
+
+    @router.post("/ai/character")
+    async def ai_character(p: CharacterIn, principal: dict = Depends(principal_dep)):
+        """«Персонаж ИИ»: ИИ описывает фото → локальная генерация (SD) перерисовывает человека в стиле. Очередь, минуты."""
+        user_id = uid(principal)
+        if p.style not in CHAR_STYLES:
+            raise HTTPException(status_code=422, detail="Неизвестный стиль")
+        _mime, b64 = _data_url_parts(p.image)
+        if len(b64) * 3 // 4 > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Картинка слишком большая")
+        raw = base64.b64decode(b64)
+        small, _w, _h = await asyncio.to_thread(_to_data_url, raw, 1024)
+        desc = ""
+        if ai_configured():  # без описания тоже работает, но хуже (цвет глаз, одежда)
+            mime, sb = _data_url_parts(small)
+            try:
+                desc = char_desc_clean(parse_json(await ai_complete(CHAR_DESC_SYSTEM, [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": sb}},
+                    {"type": "text", "text": "Return the JSON."}], 600)))
+            except (AIError, ValueError):
+                desc = ""
+        big = small  # генератор сам уменьшит до 768
+        url, hdr = _sd()
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(f"{url}/jobs", headers=hdr, json={
+                    "image": _data_url_parts(big)[1], "style": p.style, "desc": desc, "variants": p.variants})
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail="Генератор персонажей сейчас выключен — попробуйте позже") from exc
+        if r.status_code == 429:
+            raise HTTPException(status_code=429, detail="Очередь генерации заполнена — попробуйте через несколько минут")
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail="Генератор персонажей не принял задание")
+        j = r.json()
+        char_jobs[j["id"]] = user_id
+        return {"id": j["id"], "position": j.get("position", 0), "desc": desc}
+
+    @router.get("/ai/character/{job_id}")
+    async def ai_character_status(job_id: str, principal: dict = Depends(principal_dep)):
+        if char_jobs.get(job_id) != uid(principal):
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        url, hdr = _sd()
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                r = await c.get(f"{url}/jobs/{job_id}", headers=hdr)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail="Генератор персонажей недоступен") from exc
+        if r.status_code != 200:
+            raise HTTPException(status_code=404, detail="Задание не найдено (генератор перезапускался?)")
+        j = r.json()
+        out = {k: j.get(k) for k in ("status", "position", "done", "total", "error")}
+        if j.get("status") == "done":
+            out["images"] = ["data:image/png;base64," + b for b in j.get("results") or []]
+        return out
 
     @router.post("/ai/critique")
     async def ai_critique(p: AICritiqueIn, principal: dict = Depends(principal_dep)):

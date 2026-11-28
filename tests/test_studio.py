@@ -314,3 +314,11 @@ def test_face_points_clean():
     assert p["mouth"] == "teeth" and p["pose"] == "portrait" and p["yaw"] == 0.2
     assert "nose_tip" not in p and p["jaw_l"] == [1.0, 0.0]
     assert face_points_clean("oops", 10, 10) == {"people": []}
+
+
+def test_char_desc_clean():
+    from app.studio import char_desc_clean
+    assert char_desc_clean({"desc": "woman, brown skin, <script>x</script> blue dress"}) == "woman, brown skin, script x script blue dress"
+    assert char_desc_clean({"desc": 5}) == ""
+    assert char_desc_clean([]) == ""
+    assert len(char_desc_clean({"desc": "a" * 900})) == 400
